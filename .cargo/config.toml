@@ -1,0 +1,5 @@
+# oxigraph pulls getrandom 0.3, whose wasm backend must be selected explicitly —
+# the same file ikigai-linkeddata carries. Without it the `wasm32 lib clippy` job
+# cannot build the lib at all.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

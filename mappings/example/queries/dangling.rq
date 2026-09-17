@@ -1,0 +1,13 @@
+# References to a decision that does not exist, from either mechanism: a `related:`
+# token (found only because the lift profile split the field) or a DR-NNNN citation.
+PREFIX dr: <http://example.org/decisions#>
+SELECT ?from ?how ?to
+WHERE {
+  { ?e dr:related ?t BIND("related" AS ?how) }
+  UNION
+  { ?e dr:cites ?t BIND("cites" AS ?how) }
+  FILTER NOT EXISTS { ?t a dr:Decision }
+  BIND(REPLACE(STR(?e), "^urn:example:decision:", "") AS ?from)
+  BIND(REPLACE(STR(?t), "^urn:example:decision:", "") AS ?to)
+}
+ORDER BY ?from ?how ?to

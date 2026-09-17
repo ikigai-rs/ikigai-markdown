@@ -1,0 +1,55 @@
+[package]
+name = "ikigai-markdown"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Markdown as a graph for ikigai: urn:markdown:lift — one generic structural lift (frontmatter, sections, lists, links, code) plus a mapping resource (a lift profile and SPARQL CONSTRUCTs) that turns the structure into a domain model. The lifter knows no document vocabulary; the mapping carries all of it."
+authors = ["Brian Sletten <brian.sletten@gmail.com>"]
+repository = "https://github.com/ikigai-rs/ikigai-markdown"
+homepage = "https://github.com/ikigai-rs/ikigai-markdown"
+readme = "README.md"
+keywords = ["ikigai", "roc", "markdown", "rdf", "module"]
+categories = ["parser-implementations", "text-processing"]
+
+[dependencies]
+# The released kernel. 0.1.70 is the version this crate was built and tested
+# against; a lower floor has NOT been measured. The API used is old (ArgSpec
+# `class`/`one_of`/`default_value`, `Invocation::source`, `depends_on`), so the
+# real floor is probably far lower — measure before loosening this.
+ikigai-core = "0.1.70"
+async-trait = "0.1"
+# CommonMark with GFM tables, task lists and YAML-style metadata blocks. Default
+# features off: the `html` renderer is not used (md->html is out of scope).
+pulldown-cmark = { version = "0.13.4", default-features = false }
+# Frontmatter. The EVENT parser, not the loader: the loader resolves `0002` to the
+# integer 2 and `settled` to a string by YAML's rules, and a generic lift must keep
+# the text the author wrote — typing is the mapping's job. `encoding` off: input
+# is already a Rust string.
+yaml-rust2 = { version = "0.10.4", default-features = false }
+# The lift profile's citation patterns and split delimiters are regexes supplied as
+# data by the mapping resource.
+regex = "1.12"
+# Stage 2: the mapping's CONSTRUCTs run over the structural graph in an in-memory
+# store; the mapping itself is Turtle. No rocksdb (default features off), so this
+# stays pure Rust — the same posture as ikigai-linkeddata.
+oxigraph = { version = "0.5.11", default-features = false }
+
+# oxigraph pulls getrandom 0.3, whose wasm backend has to be selected explicitly —
+# the pairing ikigai-sparql uses.
+[target.'cfg(target_family = "wasm")'.dependencies]
+oxigraph = { version = "0.5.11", default-features = false, features = ["js"] }
+
+[dev-dependencies]
+futures = "0.3"
+# `tests/tree_guard.rs` holds the tokens it forbids as SHA-256 hashes, so that the
+# guard can scan itself and pass.
+sha2 = "0.10"
+# The module recipe as one test (`tests/conformance.rs`).
+ikigai-conformance = "0.3.0"
+# The REPL engine, for `tests/pipeline.rs`: whether `source urn:file:x.md |
+# urn:markdown:lift` routes is decided by the engine, which a kernel-level test
+# cannot see.
+ikigai-engine = "0.1.23"
+# The engine reads each contract as `Meta as=application/json`; without a renderer
+# it fails open and the pipeline tests prove nothing.
+serde_json = "1"

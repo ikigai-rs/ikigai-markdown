@@ -1,0 +1,10 @@
+# Every decision, whichever shape its record fields were written in.
+PREFIX dr: <http://example.org/decisions#>
+SELECT ?number ?title ?status ?date
+WHERE {
+  ?e a dr:Decision ; dr:number ?number .
+  OPTIONAL { ?e dr:title ?title }
+  OPTIONAL { ?e dr:status ?status }
+  OPTIONAL { ?e dr:date ?date }
+}
+ORDER BY ?number

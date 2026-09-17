@@ -1,0 +1,109 @@
+@prefix md:   <https://ikigai-rs.dev/ns/md#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+# The structural vocabulary of a markdown document, served by ikigai-markdown at
+# urn:markdown:vocabulary. Every term names a CommonMark / GFM construct or a lift
+# profile operation; none names what a document is about.
+# ⚠ Not yet deployed at https://ikigai-rs.dev/ns/md.
+
+<https://ikigai-rs.dev/ns/md> a <http://www.w3.org/2002/07/owl#Ontology> ;
+    rdfs:label "ikigai markdown structure" ;
+    rdfs:comment "The structural graph of a markdown document, and the mapping resource that interprets it." .
+
+# --- classes ------------------------------------------------------------------
+
+md:Document a rdfs:Class ; rdfs:label "Document" ;
+    rdfs:comment "One markdown file. Its IRI names the graph everything lifted from it lands in." .
+md:Frontmatter a rdfs:Class ; rdfs:label "Frontmatter" ;
+    rdfs:comment "The YAML block that opens a document." .
+md:Field a rdfs:Class ; rdfs:label "Field" ;
+    rdfs:comment "One frontmatter key and its value as written; nested keys are dot-joined." .
+md:Token a rdfs:Class ; rdfs:label "Token" ;
+    rdfs:comment "One piece of a list-valued field: a YAML sequence item, or a piece of a profile split." .
+md:Block a rdfs:Class ; rdfs:label "Block" ;
+    rdfs:comment "A block-level construct, in document order." .
+md:Heading a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "Heading" ;
+    rdfs:comment "An ATX or setext heading; the section every following block belongs to until a heading of the same or a higher level." .
+md:Paragraph a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "Paragraph" .
+md:List a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "List" .
+md:ListItem a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "List item" ;
+    rdfs:comment "A list item; its text is its own inline content, not that of nested blocks." .
+md:BlockQuote a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "Block quote" .
+md:CodeBlock a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "Code block" .
+md:HtmlBlock a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "HTML block" .
+md:Table a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "Table" .
+md:TableRow a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "Table row" .
+md:TableCell a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "Table cell" .
+md:ThematicBreak a rdfs:Class ; rdfs:subClassOf md:Block ; rdfs:label "Thematic break" .
+md:Link a rdfs:Class ; rdfs:label "Link" .
+md:Image a rdfs:Class ; rdfs:label "Image" .
+md:Match a rdfs:Class ; rdfs:label "Match" ;
+    rdfs:comment "One match of a lift profile's citation pattern." .
+md:Mapping a rdfs:Class ; rdfs:label "Mapping" ;
+    rdfs:comment "A mapping resource: a lift profile (splits, citation patterns) and CONSTRUCT queries." .
+md:Split a rdfs:Class ; rdfs:label "Split" ;
+    rdfs:comment "A profile operation: split a frontmatter key's value into tokens." .
+md:Citation a rdfs:Class ; rdfs:label "Citation" ;
+    rdfs:comment "A profile operation: scan the source for a named pattern." .
+
+# --- document and position -------------------------------------------------------
+
+md:path a rdf:Property ; rdfs:label "path" ; rdfs:domain md:Document ; rdfs:range xsd:string ;
+    rdfs:comment "The document's logical path, for a mapping's string functions." .
+md:source a rdf:Property ; rdfs:label "source" ; rdfs:domain md:Document ;
+    rdfs:comment "The resource the document's bytes were resolved from." .
+md:lineCount a rdf:Property ; rdfs:label "line count" ; rdfs:domain md:Document ; rdfs:range xsd:integer .
+md:document a rdf:Property ; rdfs:label "document" ; rdfs:range md:Document .
+md:parent a rdf:Property ; rdfs:label "parent" ;
+    rdfs:comment "The containing block, or the document for a top-level block." .
+md:section a rdf:Property ; rdfs:label "section" ; rdfs:range md:Heading ;
+    rdfs:comment "The nearest heading above; for a heading, the heading it nests under." .
+md:order a rdf:Property ; rdfs:label "order" ; rdfs:range xsd:integer ;
+    rdfs:comment "Position in document order." .
+md:line a rdf:Property ; rdfs:label "line" ; rdfs:range xsd:integer ; rdfs:comment "1-based first line." .
+md:endLine a rdf:Property ; rdfs:label "end line" ; rdfs:range xsd:integer ; rdfs:comment "1-based last line." .
+
+# --- frontmatter ----------------------------------------------------------------
+
+md:frontmatter a rdf:Property ; rdfs:label "frontmatter" ; rdfs:domain md:Document ; rdfs:range md:Frontmatter .
+md:frontmatterError a rdf:Property ; rdfs:label "frontmatter error" ; rdfs:domain md:Document ; rdfs:range xsd:string ;
+    rdfs:comment "Why the frontmatter could not be read; the rest of the document is still lifted." .
+md:field a rdf:Property ; rdfs:label "field" ; rdfs:domain md:Document ; rdfs:range md:Field .
+md:key a rdf:Property ; rdfs:label "key" ; rdfs:range xsd:string .
+md:value a rdf:Property ; rdfs:label "value" ; rdfs:range xsd:string ;
+    rdfs:comment "A field's value, or a match's captured value, exactly as written." .
+md:token a rdf:Property ; rdfs:label "token" ; rdfs:domain md:Field ; rdfs:range md:Token .
+md:index a rdf:Property ; rdfs:label "index" ; rdfs:domain md:Token ; rdfs:range xsd:integer .
+
+# --- block content ----------------------------------------------------------------
+
+md:text a rdf:Property ; rdfs:label "text" ; rdfs:range xsd:string ;
+    rdfs:comment "Plain inline text, whitespace collapsed; for code and HTML blocks, the content verbatim." .
+md:raw a rdf:Property ; rdfs:label "raw" ; rdfs:range xsd:string ;
+    rdfs:comment "The markdown source of a block's own inline content." .
+md:level a rdf:Property ; rdfs:label "level" ; rdfs:domain md:Heading ; rdfs:range xsd:integer .
+md:ordered a rdf:Property ; rdfs:label "ordered" ; rdfs:domain md:List ; rdfs:range xsd:boolean .
+md:checked a rdf:Property ; rdfs:label "checked" ; rdfs:domain md:ListItem ; rdfs:range xsd:boolean .
+md:header a rdf:Property ; rdfs:label "header" ; rdfs:domain md:TableRow ; rdfs:range xsd:boolean .
+md:column a rdf:Property ; rdfs:label "column" ; rdfs:domain md:TableCell ; rdfs:range xsd:integer .
+md:fenced a rdf:Property ; rdfs:label "fenced" ; rdfs:domain md:CodeBlock ; rdfs:range xsd:boolean .
+md:info a rdf:Property ; rdfs:label "info string" ; rdfs:domain md:CodeBlock ; rdfs:range xsd:string .
+md:href a rdf:Property ; rdfs:label "href" ; rdfs:range xsd:string .
+md:block a rdf:Property ; rdfs:label "block" ; rdfs:range md:Block ;
+    rdfs:comment "The innermost block a link or match falls in." .
+md:matchedBy a rdf:Property ; rdfs:label "matched by" ; rdfs:domain md:Match ; rdfs:range xsd:string ;
+    rdfs:comment "The name of the citation pattern that produced a match." .
+
+# --- the mapping resource ----------------------------------------------------------
+
+md:split a rdf:Property ; rdfs:label "split" ; rdfs:domain md:Mapping ; rdfs:range md:Split .
+md:delimiter a rdf:Property ; rdfs:label "delimiter" ; rdfs:domain md:Split ; rdfs:range xsd:string ;
+    rdfs:comment "A regex; default ','." .
+md:citation a rdf:Property ; rdfs:label "citation" ; rdfs:domain md:Mapping ; rdfs:range md:Citation .
+md:name a rdf:Property ; rdfs:label "name" ; rdfs:domain md:Citation ; rdfs:range xsd:string .
+md:pattern a rdf:Property ; rdfs:label "pattern" ; rdfs:domain md:Citation ; rdfs:range xsd:string ;
+    rdfs:comment "A regex; the named group v, else group 1, is each match's value." .
+md:construct a rdf:Property ; rdfs:label "construct" ; rdfs:domain md:Mapping ; rdfs:range xsd:string ;
+    rdfs:comment "A SPARQL CONSTRUCT over one document's structural graph; must not emit blank nodes." .

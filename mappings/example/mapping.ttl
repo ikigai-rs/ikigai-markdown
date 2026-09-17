@@ -1,0 +1,130 @@
+# An EXAMPLE mapping, for an invented decision-record format. Read it to learn how to
+# write your own; nothing in the lifter knows any of these words.
+#
+# The format: one markdown file per decision, at decisions/NNNN-slug.md.
+#
+#   - The title is the document's level-1 heading.
+#   - Its record fields come in EITHER of two shapes, and both land on the same
+#     predicates (dr:status, dr:date):
+#
+#       YAML frontmatter             a bullet list under "## Record"
+#       ---                          ## Record
+#       status: accepted             - **Status**: Accepted
+#       date: 2026-01-12             - **Date**: 2026-02-03
+#       related: 0002, 0009
+#       ---
+#
+#   - `related:` is a comma-delimited list of decision numbers (frontmatter only).
+#   - Prose cites another decision as DR-0007.
+#
+# Install it by name (see the README): copy this directory to
+#   <config home>/markdown/mappings/example/
+# and lift with  mapping=urn:markdown:mapping:example
+#
+# Every regex below is written without backslashes ([0-9], not \d): a backslash inside
+# a SPARQL string inside a Turtle string has to be written four times over.
+
+@prefix md: <https://ikigai-rs.dev/ns/md#> .
+
+# The subject is an ABSOLUTE IRI, not <#mapping>, and the profile entries below are
+# named rather than the blank nodes the short form allows. A mapping installed in the
+# config home is SERVED — anything may parse it, with no base and no way to talk about
+# a blank node — so it is skolemized like any other graph in the system. Both short
+# forms still work for a mapping passed by value.
+<urn:example:mapping> a md:Mapping ;
+
+    # --- the lift profile --------------------------------------------------------
+    # SPARQL cannot split "0002, 0009" into rows, so stage 1 does it: each piece of
+    # the `related` field becomes an md:Token. That is what lets a query see a
+    # reference to a decision that does NOT exist.
+    md:split <urn:example:mapping:split:related> ;
+
+    # Every "DR-0007" anywhere in the source becomes an md:Match whose md:value is
+    # the number (the named group `v`).
+    md:citation <urn:example:mapping:citation:decision> ;
+
+    # --- the constructs ------------------------------------------------------------
+    # Each runs on its own over one document's structural graph; the domain graph is
+    # their union. None may emit a blank node, so every IRI is built with CONCAT.
+
+    # 1. The decision itself: its IRI, number and title.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX dr: <http://example.org/decisions#>
+CONSTRUCT { ?e a dr:Decision ; dr:number ?num ; dr:document ?doc ; dr:title ?title . }
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "(^|/)decisions/[0-9]{4}-[^/]*[.]md$"))
+  BIND(REPLACE(?path, "^(.*/)?decisions/([0-9]{4})-[^/]*[.]md$", "$2") AS ?num)
+  BIND(IRI(CONCAT("urn:example:decision:", ?num)) AS ?e)
+  OPTIONAL { ?h a md:Heading ; md:document ?doc ; md:level 1 ; md:text ?title }
+}
+""" ;
+
+    # 2. The record fields, from EITHER shape. Each UNION branch yields a key and a
+    #    raw value; everything after the UNION normalizes them once.
+    md:construct """
+PREFIX md:  <https://ikigai-rs.dev/ns/md#>
+PREFIX dr:  <http://example.org/decisions#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+CONSTRUCT { ?e dr:status ?status ; dr:date ?date . }
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "(^|/)decisions/[0-9]{4}-[^/]*[.]md$"))
+  BIND(IRI(CONCAT("urn:example:decision:", REPLACE(?path, "^(.*/)?decisions/([0-9]{4})-[^/]*[.]md$", "$2"))) AS ?e)
+  {
+    # Shape 1: a frontmatter field.
+    ?doc md:field ?field .
+    ?field md:key ?rawKey ; md:value ?raw .
+  } UNION {
+    # Shape 2: a `**Key**: value` list item under the "Record" heading.
+    ?heading a md:Heading ; md:document ?doc ; md:text "Record" .
+    ?item a md:ListItem ; md:section ?heading ; md:raw ?line .
+    FILTER(REGEX(?line, "^[*][*][^*]+[*][*]:"))
+    BIND(REPLACE(?line, "^[*][*]([^*]+)[*][*]:.*$", "$1", "s") AS ?rawKey)
+    BIND(REPLACE(?line, "^[*][*][^*]+[*][*]:", "", "s") AS ?raw)
+  }
+  BIND(LCASE(?rawKey) AS ?key)
+  BIND(REPLACE(?raw, "^ +| +$", "") AS ?value)
+  # An unbound variable leaves its template triple out, so one construct can write
+  # a different predicate per row.
+  BIND(IF(?key = "status", LCASE(?value), ?unbound) AS ?status)
+  BIND(IF(?key = "date" && REGEX(?value, "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"), xsd:date(?value), ?unbound) AS ?date)
+}
+""" ;
+
+    # 3. `related:` — one edge per token the split produced, whether or not the
+    #    decision it names exists.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX dr: <http://example.org/decisions#>
+CONSTRUCT { ?e dr:related ?target . }
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "(^|/)decisions/[0-9]{4}-[^/]*[.]md$"))
+  BIND(IRI(CONCAT("urn:example:decision:", REPLACE(?path, "^(.*/)?decisions/([0-9]{4})-[^/]*[.]md$", "$2"))) AS ?e)
+  ?doc md:field ?field .
+  ?field md:key "related" ; md:token ?token .
+  ?token md:text ?num .
+  FILTER(REGEX(?num, "^[0-9]{4}$"))
+  BIND(IRI(CONCAT("urn:example:decision:", ?num)) AS ?target)
+}
+""" ;
+
+    # 4. Prose citations: one edge per DR-NNNN match.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX dr: <http://example.org/decisions#>
+CONSTRUCT { ?e dr:cites ?target . }
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "(^|/)decisions/[0-9]{4}-[^/]*[.]md$"))
+  BIND(IRI(CONCAT("urn:example:decision:", REPLACE(?path, "^(.*/)?decisions/([0-9]{4})-[^/]*[.]md$", "$2"))) AS ?e)
+  ?match a md:Match ; md:document ?doc ; md:matchedBy "decision" ; md:value ?num .
+  BIND(IRI(CONCAT("urn:example:decision:", ?num)) AS ?target)
+}
+""" .
+
+<urn:example:mapping:split:related> md:key "related" ; md:delimiter "," .
+
+<urn:example:mapping:citation:decision> md:name "decision" ; md:pattern "DR-(?P<v>[0-9]{4})" .
