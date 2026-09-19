@@ -79,6 +79,14 @@ cut. Editing the mapping re-lifts every document under it with no rebuild.
 - **Unbound on purpose.** `BIND(IF(cond, value, ?unbound) AS ?x)` leaves `?x` unbound
   when `cond` is false. A CONSTRUCT template triple with an unbound variable is simply
   not emitted, and that's how one construct writes different predicates per row.
+- **A union of graphs is a multiset — count with `DISTINCT`.** Each document lifts into
+  its own named graph, so a query over the union (what `reconcile` and the tests run)
+  sees a triple once *per graph that asserts it*. A construct that states a fact about
+  something shared — a project, a release, anything many documents mention — restates it
+  from every one of them, and `COUNT(*)` then counts documents rather than things. It
+  does not error and the number looks plausible: counting one corpus's changes this way
+  gave 1263 for a true 496. Aggregate with `COUNT(DISTINCT ?x)`, and reach for
+  `SELECT DISTINCT` in a subquery before summing.
 
 ## Finding a mapping by name
 
