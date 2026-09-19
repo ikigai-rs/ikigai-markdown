@@ -163,6 +163,89 @@ fn sections_nest_and_blocks_know_their_section() {
     );
 }
 
+/// Two headings at the SAME level under one parent, each with their own subtree.
+///
+/// ★ This is the property every layered document format rests on, and the one whose
+/// failure would be silent: if the second `### Item` kept the first one's section, or
+/// if `#### Leaf: B` attached to `Item: First`, a mapping would still produce a graph
+/// — just one that quietly says the wrong thing. `SAMPLE` cannot catch it, because it
+/// has no two headings at the same level anywhere.
+///
+/// It also pins the distinction between the two containment edges, which are easy to
+/// confuse when writing a mapping: `md:parent` is BLOCK containment (a list item's
+/// list), so a heading's parent is always the document, however deeply it nests;
+/// `md:section` is the HEADING hierarchy.
+#[test]
+fn heading_siblings_do_not_bleed_into_each_other() {
+    const NESTED: &str = "# Doc
+
+## Group
+
+### Item: First
+
+Body of first.
+
+#### Leaf: A
+
+- alpha
+
+### Item: Second
+
+Body of second.
+
+#### Leaf: B
+
+- beta
+";
+    let quads = lift(NESTED, &doc("n.md"), &Profile::default());
+
+    // Four levels, and the second level-3 heading returns to "Group" rather than
+    // nesting under its sibling.
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?h ?level ?section WHERE { ?x a md:Heading ; md:text ?h ; md:level ?level ;
+               md:order ?o . OPTIONAL { ?x md:section [ md:text ?section ] } } ORDER BY ?o"
+        ),
+        vec![
+            row(&["Doc", "1", ""]),
+            row(&["Group", "2", "Doc"]),
+            row(&["Item: First", "3", "Group"]),
+            row(&["Leaf: A", "4", "Item: First"]),
+            row(&["Item: Second", "3", "Group"]),
+            row(&["Leaf: B", "4", "Item: Second"]),
+        ]
+    );
+
+    // Each subtree's content stays in its own subtree: a paragraph under the
+    // requirement-shaped heading, a list item under the leaf-shaped one below it.
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?text ?section WHERE { ?b a ?c ; md:text ?text ; md:order ?o ;
+               md:section [ md:text ?section ] .
+               FILTER(?c IN (md:Paragraph, md:ListItem)) } ORDER BY ?o"
+        ),
+        vec![
+            row(&["Body of first.", "Item: First"]),
+            row(&["alpha", "Leaf: A"]),
+            row(&["Body of second.", "Item: Second"]),
+            row(&["beta", "Leaf: B"]),
+        ]
+    );
+
+    // md:parent is block containment, not heading depth: every heading's parent is
+    // the document, and only the list item has a block for a parent.
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT (COUNT(*) AS ?n) WHERE { ?h a md:Heading ; md:parent ?p .
+               FILTER(?p = <urn:markdown:doc:n.md>) }"
+        ),
+        vec![row(&["6"])]
+    );
+}
+
 #[test]
 fn a_list_item_holds_its_own_text_and_nothing_nested() {
     let quads = lift(SAMPLE, &doc("s.md"), &Profile::default());
@@ -336,32 +419,101 @@ fn a_mapping_is_refused_with_its_problem_named() {
 /// document process. Every word a decision-record mapping cares about lives in
 /// a mapping, and none of it may appear in the crate's source — not in code, not in
 /// comments. If this fails, the branch you just wrote belongs in a mapping.
+///
+/// The list covers two families, because one family only guards the format that was
+/// here first. The second is the vocabulary of SPEC-DRIVEN formats — requirements,
+/// scenarios, deltas — which is what a mapping for a layered format would be tempted
+/// to teach the lifter. A guard that names only the words already in the repository
+/// catches nothing new; these are the words the NEXT dialect would smuggle in.
+///
+/// ⚠ What this cannot guard, and the reason is worth knowing before trusting it:
+/// `capability` is one of ikigai's own kernel concepts and is used in this crate's
+/// own documentation, so it can never be denied here. A word this ecosystem already
+/// owns is invisible to a word denylist, and the overlap is not a coincidence —
+/// document-process vocabularies and this system's vocabulary are drawn from the
+/// same well. This test is a tripwire, not a proof.
 #[test]
 fn no_source_file_knows_a_document_process_vocabulary() {
     let words = regex::Regex::new(
-        r"(?i)\b(rdr|rdrs|jdr|jdrs|rfd|rfds|adr|pep|status|state|cluster|supersedes?|predecessors?|overrides?|metadata|seam|lineage|superseded)\b",
+        // ⚠ The boundary is `[^a-zA-Z0-9]`, not `\b`. Regex counts `_` as a word
+        // character, so `\b` does not fire inside a snake_case identifier — and
+        // snake_case is how format knowledge would actually arrive in Rust. Under
+        // `\b`, `fn render_delta()` and `let parse_status` both read as clean. This
+        // is the same tokenization `tests/tree_guard.rs` uses, for the same reason.
+        r"(?i)(^|[^a-zA-Z0-9])(rdr|rdrs|jdr|jdrs|rfd|rfds|adr|pep|status|state|cluster|supersedes?|predecessors?|overrides?|metadata|seam|lineage|superseded|requirements?|scenarios?|deltas?|proposals?|shall)([^a-zA-Z0-9]|$)",
     )
     .unwrap();
+
+    // Identifiers a DEPENDENCY named, which this crate only spells. They are not
+    // this crate knowing a document process; they are the parser's own API surface,
+    // and renaming them is not ours to do. Each is removed from the line before the
+    // scan, and a second assertion below fails if one goes stale.
+    //
+    // ⚠ There was exactly one when the boundary above was widened, and it had been
+    // in `src/` since the first commit — `\b` never fired on it, because `_` is a
+    // word character. A guard that cannot see a snake_case identifier cannot see the
+    // shape that format knowledge actually takes in Rust.
+    const UPSTREAM: [&str; 1] = ["ENABLE_YAML_STYLE_METADATA_BLOCKS"];
+
     let mut hits = Vec::new();
+    let mut sources = Vec::new();
     for entry in std::fs::read_dir(repo().join("src")).unwrap() {
         let path = entry.unwrap().path();
         let text = std::fs::read_to_string(&path).unwrap();
         for (n, line) in text.lines().enumerate() {
-            if let Some(m) = words.find(line) {
+            let mut scanned = line.to_string();
+            for id in UPSTREAM {
+                scanned = scanned.replace(id, "");
+            }
+            if let Some(c) = words.captures(&scanned) {
                 hits.push(format!(
                     "{}:{}: `{}` in {line}",
                     path.display(),
                     n + 1,
-                    m.as_str()
+                    &c[2]
                 ));
             }
         }
+        sources.push(text);
     }
     assert!(
         hits.is_empty(),
         "stage 1 must not know these words:\n{}",
         hits.join("\n")
     );
+
+    // An exemption nobody needs any more is an exemption that quietly widens the
+    // hole, so each one has to still be in use.
+    for id in UPSTREAM {
+        assert!(
+            sources.iter().any(|t| t.contains(id)),
+            "`{id}` is exempted but no longer appears in src/; drop it from UPSTREAM"
+        );
+    }
+
+    // ★ The guard's own reach, asserted rather than assumed. A denylist passes
+    // trivially when it happens to name nothing the next author would write, and
+    // there is no way to tell the two cases apart from a green run — so state what
+    // it catches, and state the hole.
+    let caught = |line: &str| words.is_match(line);
+    assert!(caught("let requirement = ..."), "a layered format's unit");
+    assert!(caught("// one Scenario per branch"), "case is folded");
+    assert!(
+        caught("/// the document SHALL name it"),
+        "RFC 2119 strength"
+    );
+    // ★ The case `\b` silently misses: format knowledge arriving as an identifier.
+    assert!(caught("fn render_delta(&self)"), "snake_case is reached");
+    assert!(
+        caught("let parse_status = ..."),
+        "and so is the older family"
+    );
+    // A longer word containing one is a different token; like `tree_guard.rs`, this
+    // is a guard against a word coming back, not against someone hiding one.
+    assert!(!caught("requirementless"));
+    // And the hole: ikigai's own word cannot be denied, so nothing here would stop
+    // `capability` from becoming format knowledge in `src/`.
+    assert!(!caught("the caller's capability"));
 }
 
 /// Every `md:` term the lift or a mapping can write is defined in the served
