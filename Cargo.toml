@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-markdown"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Markdown as a graph for ikigai: urn:markdown:lift — one generic structural lift (frontmatter, sections, lists, links, code) plus a mapping resource (a lift profile and SPARQL CONSTRUCTs) that turns the structure into a domain model. The lifter knows no document vocabulary; the mapping carries all of it."
