@@ -97,6 +97,23 @@ fn request(case: &str, n: usize) -> (String, Option<String>) {
                 " ]".repeat(n)
             )),
         ),
+        // The document's YAML frontmatter, a compact nested block sequence: two bytes a
+        // level, and `- - - x` is ordinary YAML. Reached through the lift's own `src`.
+        "frontmatter-seq" => (format!("---\n{}x\n---\n\n# T\n", "- ".repeat(n)), None),
+        // The same depth as nested flow sequences (the scanner caps those at 255 levels)
+        // and as indented block mappings.
+        "frontmatter-flow" => (
+            format!("---\n{}x{}\n---\n\n# T\n", "[".repeat(n), "]".repeat(n)),
+            None,
+        ),
+        "frontmatter-map" => (
+            format!(
+                "---\n{}x: 1\n---\n\n# T\n",
+                (0..n).map(|i| format!("{}k:\n", " ".repeat(i))).collect::<String>()
+                    + &" ".repeat(n)
+            ),
+            None,
+        ),
         // The markdown itself: nested block quotes and nested lists.
         "blockquotes" => (format!("{}x\n", "> ".repeat(n)), None),
         "lists" => (format!("{}x\n", "- ".repeat(n)), None),
@@ -272,6 +289,31 @@ fn the_other_parsers_of_caller_text_do_not_recurse_on_nesting() {
     let outcome = probe("citation-regex", 3000);
     assert!(
         outcome.starts_with("err invalid argument `mapping`") && outcome.contains("not a regex"),
+        "{outcome}"
+    );
+}
+
+#[test]
+fn deeply_nested_frontmatter_is_read_without_recursion() {
+    // yaml-rust2's `Parser::load` recurses once per level of nesting, and on main
+    // `- - - … x` 100,000 deep in a document's frontmatter aborted the host (ledger #963).
+    // The lift now reads the parser's events in a loop and keeps its own stack.
+    let outcome = probe("frontmatter-seq", 100_000);
+    assert!(
+        outcome.starts_with("ok ") && outcome.contains("md#Field"),
+        "{outcome}"
+    );
+    // Flow sequences past the scanner's 255 levels are a YAML error, recorded on the
+    // document as data.
+    let outcome = probe("frontmatter-flow", 100_000);
+    assert!(
+        outcome.starts_with("ok ") && outcome.contains("frontmatterError"),
+        "{outcome}"
+    );
+    // Indented mappings cost n²/2 bytes, so 2,000 levels is 2 MB of frontmatter.
+    let outcome = probe("frontmatter-map", 2_000);
+    assert!(
+        outcome.starts_with("ok ") && outcome.contains("md#Field"),
         "{outcome}"
     );
 }
