@@ -11,6 +11,17 @@ readme = "README.md"
 keywords = ["ikigai", "roc", "markdown", "rdf", "module"]
 categories = ["parser-implementations", "text-processing"]
 
+[features]
+# ⚠ A TEST GATE, never a `cfg` on a code path. `oxigraph/http-client` is what `ikigai-cli` gets
+# by unification (rudof_rdf enables `http-client-rustls-native` on every native target, through
+# `ikigai-shacl`), and with it on, every `SparqlEvaluator` installs a default HTTP service
+# handler: a `SERVICE <http://…>` in a mapping's `md:construct` would be an outbound request no
+# `urn:cap:net:*` gates (ledger #1085, #1083). `src/sparql.rs` refuses it in every build; this
+# line is how CI (`features: http-client`) builds the crate the way those hosts do and proves
+# it, with `tests/service_egress.rs` against a 127.0.0.1 stub. Only that test's CONTROL is
+# cfg'd on it. Plain `http-client`, not a TLS variant: the stub is plain HTTP.
+http-client = ["oxigraph/http-client"]
+
 [dependencies]
 # The released kernel. 0.1.70 is the version this crate was built and tested
 # against; a lower floor has NOT been measured. The API used is old (ArgSpec
@@ -40,9 +51,10 @@ oxigraph = { version = "0.5.11", default-features = false }
 # than copied, so there is one set of constants (ledger #976 is where they get a shared
 # home). Default features off: no RocksDB, and it builds for wasm. What it adds to this
 # crate's graph is the `toml` stack, `serde_json` and `indexmap`, all pure Rust.
-# 0.2.8 is the TRUE floor: `limits` arrived in 0.2.7 and `budget::check_query` in 0.2.8.
-# ⚠ `"0.2.8"` is a CEILING as well as a floor — `<0.3.0`.
-ikigai-store = { version = "0.2.8", default-features = false }
+# 0.2.10 is the TRUE floor: `limits` arrived in 0.2.7, `budget::check_query` in 0.2.8, and
+# `service` (the refusing evaluator and the `SERVICE` door check, ledger #1085) in 0.2.10.
+# ⚠ `"0.2.10"` is a CEILING as well as a floor — `<0.3.0`.
+ikigai-store = { version = "0.2.10", default-features = false }
 # The parser oxigraph itself uses, named so a construct's ALGEBRA can be measured by
 # `budget::check_query` before oxigraph plans it. Already in the graph through oxigraph,
 # which pins `=0.4.7` and converts from this type (`for_query`); the caret unifies with it.
