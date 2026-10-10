@@ -2,23 +2,36 @@
 
 use oxigraph::io::{RdfFormat, RdfSerializer};
 use oxigraph::model::{GraphName, NamedNode, NamedOrBlankNode, Quad, Term};
-use oxigraph::sparql::{QueryResults, SparqlEvaluator};
 use oxigraph::store::Store;
+
+use crate::sparql::refuse;
 
 /// Run `constructs` over `structural` (queried as the DEFAULT graph, so a mapping
 /// needs no `GRAPH` clause) and return their union as quads in `graph`.
 ///
 /// Refuses a construct that emits a blank node: the module recipe skolemizes, and
-/// a blank node minted per run would make two lifts of the same bytes differ.
+/// a blank node minted per run would make two lifts of the same bytes differ. Each
+/// construct is caller text, so it runs inside the bounds `crate::sparql` applies
+/// (ledger #963).
 pub fn apply(
     structural: &[Quad],
     graph: &NamedNode,
     constructs: &[String],
 ) -> Result<Vec<Quad>, String> {
+    apply_checked(structural, graph, constructs).map_err(crate::sparql::detail)
+}
+
+/// [`apply`] with its refusals typed, as [`crate::Mapping::parse`]'s twin is.
+pub(crate) fn apply_checked(
+    structural: &[Quad],
+    graph: &NamedNode,
+    constructs: &[String],
+) -> ikigai_core::Result<Vec<Quad>> {
     if constructs.is_empty() {
         return Ok(Vec::new());
     }
-    let store = Store::new().map_err(|e| format!("in-memory store: {e}"))?;
+    let store_error = |e: oxigraph::store::StorageError| refuse(format!("in-memory store: {e}"));
+    let store = Store::new().map_err(store_error)?;
     for q in structural {
         store
             .insert(&Quad::new(
@@ -27,35 +40,27 @@ pub fn apply(
                 q.object.clone(),
                 GraphName::DefaultGraph,
             ))
-            .map_err(|e| format!("in-memory store: {e}"))?;
+            .map_err(store_error)?;
     }
     let mut out = Vec::new();
-    for (i, construct) in constructs.iter().enumerate() {
-        let results = SparqlEvaluator::new()
-            .parse_query(construct)
-            .map_err(|e| format!("construct {}: {e}", i + 1))?
-            .on_store(&store)
-            .execute()
-            .map_err(|e| format!("construct {}: {e}", i + 1))?;
-        let QueryResults::Graph(triples) = results else {
-            return Err(format!("construct {} is not a CONSTRUCT query", i + 1));
+    for (i, text) in constructs.iter().enumerate() {
+        let what = format!("construct {}", i + 1);
+        let Some(triples) = crate::sparql::construct(text, &store, &what)? else {
+            return Err(refuse(format!("{what} is not a CONSTRUCT query")));
         };
-        for triple in triples {
-            let t = triple.map_err(|e| format!("construct {}: {e}", i + 1))?;
+        for t in triples {
             let subject = match t.subject {
                 NamedOrBlankNode::NamedNode(n) => n,
                 _ => {
-                    return Err(format!(
-                        "construct {} emitted a blank-node subject; build IRIs with IRI(CONCAT(…))",
-                        i + 1
-                    ))
+                    return Err(refuse(format!(
+                        "{what} emitted a blank-node subject; build IRIs with IRI(CONCAT(…))"
+                    )))
                 }
             };
             if matches!(t.object, Term::BlankNode(_)) {
-                return Err(format!(
-                    "construct {} emitted a blank-node object; build IRIs with IRI(CONCAT(…))",
-                    i + 1
-                ));
+                return Err(refuse(format!(
+                    "{what} emitted a blank-node object; build IRIs with IRI(CONCAT(…))"
+                )));
             }
             out.push(Quad::new(
                 subject,

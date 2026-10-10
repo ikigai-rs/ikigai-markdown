@@ -36,7 +36,6 @@
 
 use oxigraph::io::{RdfFormat, RdfParser};
 use oxigraph::model::{NamedOrBlankNode, Term, Triple};
-use oxigraph::sparql::{QueryResults, SparqlEvaluator};
 use oxigraph::store::Store;
 use regex::Regex;
 
@@ -96,103 +95,117 @@ impl Mapping {
     /// assert!(m.constructs.is_empty());
     /// ```
     pub fn parse(turtle: &str, base: &str) -> Result<Mapping, String> {
-        let parser = RdfParser::from_format(RdfFormat::Turtle)
-            .with_base_iri(base)
-            .map_err(|e| format!("mapping base IRI `{base}`: {e}"))?;
-        let mut triples: Vec<Triple> = Vec::new();
-        for quad in parser.for_slice(turtle.as_bytes()) {
-            let quad = quad.map_err(|e| format!("mapping is not valid Turtle: {e}"))?;
-            triples.push(Triple::new(quad.subject, quad.predicate, quad.object));
-        }
+        Mapping::parse_checked(turtle, base).map_err(crate::sparql::detail)
+    }
 
-        let mapping_class = Term::from(md("Mapping"));
-        let subjects: Vec<&NamedOrBlankNode> = triples
-            .iter()
-            .filter(|t| t.predicate.as_str() == RDF_TYPE && t.object == mapping_class)
-            .map(|t| &t.subject)
-            .collect();
-        let subject = match subjects.as_slice() {
-            [one] => (*one).clone(),
-            [] => return Err("mapping declares no subject typed md:Mapping".to_string()),
-            many => {
-                return Err(format!(
-                    "mapping declares {} subjects typed md:Mapping; exactly one is allowed",
-                    many.len()
-                ))
-            }
-        };
-
-        let objects = |s: &NamedOrBlankNode, p: &str| -> Vec<Term> {
-            let p = md(p);
-            triples
-                .iter()
-                .filter(|t| &t.subject == s && t.predicate == p)
-                .map(|t| t.object.clone())
-                .collect()
-        };
-        let literal = |s: &NamedOrBlankNode, p: &str| -> Result<Option<String>, String> {
-            match objects(s, p).as_slice() {
-                [] => Ok(None),
-                [Term::Literal(l)] => Ok(Some(l.value().to_string())),
-                [_] => Err(format!("md:{p} must be a literal")),
-                _ => Err(format!("md:{p} is given more than once")),
-            }
-        };
-        let node = |t: Term, p: &str| -> Result<NamedOrBlankNode, String> {
-            match t {
-                Term::NamedNode(n) => Ok(n.into()),
-                Term::BlankNode(b) => Ok(b.into()),
-                _ => Err(format!("md:{p} must point at a node, not a literal")),
-            }
-        };
-
-        let mut profile = Profile::default();
-        for t in objects(&subject, "split") {
-            let s = node(t, "split")?;
-            let key = literal(&s, "key")?.ok_or("an md:split has no md:key")?;
-            let delimiter = literal(&s, "delimiter")?.unwrap_or_else(|| ",".to_string());
-            let delimiter = Regex::new(&delimiter)
-                .map_err(|e| format!("md:split `{key}`: delimiter is not a regex: {e}"))?;
-            profile.splits.push(Split { key, delimiter });
-        }
-        for t in objects(&subject, "citation") {
-            let s = node(t, "citation")?;
-            let name = literal(&s, "name")?.ok_or("an md:citation has no md:name")?;
-            let pattern = literal(&s, "pattern")?
-                .ok_or_else(|| format!("md:citation `{name}` has no md:pattern"))?;
-            let pattern = Regex::new(&pattern)
-                .map_err(|e| format!("md:citation `{name}`: pattern is not a regex: {e}"))?;
-            profile.citations.push(Citation { name, pattern });
-        }
-        // Parse order is the file's order; sort so the lift's node numbering does
-        // not depend on how the author arranged the Turtle.
-        profile.splits.sort_by(|a, b| a.key.cmp(&b.key));
-        profile.citations.sort_by(|a, b| a.name.cmp(&b.name));
-
+    /// [`Mapping::parse`] with its refusals typed: an [`ikigai_core::Error::InvalidArgument`]
+    /// on `mapping` for anything wrong with the mapping, and whatever else running a
+    /// construct can fail with (a thread that could not be started is
+    /// [`ikigai_core::Error::Unavailable`], a transient condition, not a bad mapping).
+    pub(crate) fn parse_checked(turtle: &str, base: &str) -> ikigai_core::Result<Mapping> {
+        let (profile, texts) = read(turtle, base).map_err(crate::sparql::refuse)?;
+        // Syntax, then form: evaluated over an empty store, a CONSTRUCT answers with a
+        // graph and anything else does not. Caller text, so through the bounds (ledger #963).
+        let empty =
+            Store::new().map_err(|e| crate::sparql::refuse(format!("in-memory store: {e}")))?;
         let mut constructs = Vec::new();
-        for t in objects(&subject, "construct") {
-            let Term::Literal(l) = t else {
-                return Err("md:construct must be a literal holding a query".to_string());
-            };
-            // Syntax, then form: evaluated over an empty store, a CONSTRUCT answers
-            // with a graph and anything else does not.
-            let empty = Store::new().map_err(|e| format!("in-memory store: {e}"))?;
-            let results = SparqlEvaluator::new()
-                .parse_query(l.value())
-                .map_err(|e| format!("md:construct is not valid SPARQL: {e}"))?
-                .on_store(&empty)
-                .execute()
-                .map_err(|e| format!("md:construct does not evaluate: {e}"))?;
-            if !matches!(results, QueryResults::Graph(_)) {
-                return Err("md:construct must be a CONSTRUCT query".to_string());
+        for text in texts {
+            if crate::sparql::construct(&text, &empty, "md:construct")?.is_none() {
+                return Err(crate::sparql::refuse(
+                    "md:construct must be a CONSTRUCT query",
+                ));
             }
-            constructs.push(l.value().to_string());
+            constructs.push(text);
         }
         constructs.sort();
-
         Ok(Mapping {
             profile,
             constructs,
         })
     }
+}
+
+/// The mapping's Turtle read into its profile and its constructs' text, unchecked.
+fn read(turtle: &str, base: &str) -> Result<(Profile, Vec<String>), String> {
+    let parser = RdfParser::from_format(RdfFormat::Turtle)
+        .with_base_iri(base)
+        .map_err(|e| format!("mapping base IRI `{base}`: {e}"))?;
+    let mut triples: Vec<Triple> = Vec::new();
+    for quad in parser.for_slice(turtle.as_bytes()) {
+        let quad = quad.map_err(|e| format!("mapping is not valid Turtle: {e}"))?;
+        triples.push(Triple::new(quad.subject, quad.predicate, quad.object));
+    }
+
+    let mapping_class = Term::from(md("Mapping"));
+    let subjects: Vec<&NamedOrBlankNode> = triples
+        .iter()
+        .filter(|t| t.predicate.as_str() == RDF_TYPE && t.object == mapping_class)
+        .map(|t| &t.subject)
+        .collect();
+    let subject = match subjects.as_slice() {
+        [one] => (*one).clone(),
+        [] => return Err("mapping declares no subject typed md:Mapping".to_string()),
+        many => {
+            return Err(format!(
+                "mapping declares {} subjects typed md:Mapping; exactly one is allowed",
+                many.len()
+            ))
+        }
+    };
+
+    let objects = |s: &NamedOrBlankNode, p: &str| -> Vec<Term> {
+        let p = md(p);
+        triples
+            .iter()
+            .filter(|t| &t.subject == s && t.predicate == p)
+            .map(|t| t.object.clone())
+            .collect()
+    };
+    let literal = |s: &NamedOrBlankNode, p: &str| -> Result<Option<String>, String> {
+        match objects(s, p).as_slice() {
+            [] => Ok(None),
+            [Term::Literal(l)] => Ok(Some(l.value().to_string())),
+            [_] => Err(format!("md:{p} must be a literal")),
+            _ => Err(format!("md:{p} is given more than once")),
+        }
+    };
+    let node = |t: Term, p: &str| -> Result<NamedOrBlankNode, String> {
+        match t {
+            Term::NamedNode(n) => Ok(n.into()),
+            Term::BlankNode(b) => Ok(b.into()),
+            _ => Err(format!("md:{p} must point at a node, not a literal")),
+        }
+    };
+
+    let mut profile = Profile::default();
+    for t in objects(&subject, "split") {
+        let s = node(t, "split")?;
+        let key = literal(&s, "key")?.ok_or("an md:split has no md:key")?;
+        let delimiter = literal(&s, "delimiter")?.unwrap_or_else(|| ",".to_string());
+        let delimiter = Regex::new(&delimiter)
+            .map_err(|e| format!("md:split `{key}`: delimiter is not a regex: {e}"))?;
+        profile.splits.push(Split { key, delimiter });
+    }
+    for t in objects(&subject, "citation") {
+        let s = node(t, "citation")?;
+        let name = literal(&s, "name")?.ok_or("an md:citation has no md:name")?;
+        let pattern = literal(&s, "pattern")?
+            .ok_or_else(|| format!("md:citation `{name}` has no md:pattern"))?;
+        let pattern = Regex::new(&pattern)
+            .map_err(|e| format!("md:citation `{name}`: pattern is not a regex: {e}"))?;
+        profile.citations.push(Citation { name, pattern });
+    }
+    // Parse order is the file's order; sort so the lift's node numbering does
+    // not depend on how the author arranged the Turtle.
+    profile.splits.sort_by(|a, b| a.key.cmp(&b.key));
+    profile.citations.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut constructs = Vec::new();
+    for t in objects(&subject, "construct") {
+        let Term::Literal(l) = t else {
+            return Err("md:construct must be a literal holding a query".to_string());
+        };
+        constructs.push(l.value().to_string());
+    }
+    Ok((profile, constructs))
 }

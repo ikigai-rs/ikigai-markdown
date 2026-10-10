@@ -33,6 +33,20 @@ regex = "1.12"
 # store; the mapping itself is Turtle. No rocksdb (default features off), so this
 # stays pure Rust — the same posture as ikigai-linkeddata.
 oxigraph = { version = "0.5.11", default-features = false }
+# The bounds on caller SPARQL — a mapping's `md:construct` is caller text (ledger #963):
+# `limits::check_sparql` + `limits::on_sparql_stack` keep a nested or chained query from
+# overflowing the stack and aborting the host, and `budget::check_query` keeps the planner,
+# which cannot be interrupted, from spending minutes on one. Taken from the store rather
+# than copied, so there is one set of constants (ledger #976 is where they get a shared
+# home). Default features off: no RocksDB, and it builds for wasm. What it adds to this
+# crate's graph is the `toml` stack, `serde_json` and `indexmap`, all pure Rust.
+# 0.2.8 is the TRUE floor: `limits` arrived in 0.2.7 and `budget::check_query` in 0.2.8.
+# ⚠ `"0.2.8"` is a CEILING as well as a floor — `<0.3.0`.
+ikigai-store = { version = "0.2.8", default-features = false }
+# The parser oxigraph itself uses, named so a construct's ALGEBRA can be measured by
+# `budget::check_query` before oxigraph plans it. Already in the graph through oxigraph,
+# which pins `=0.4.7` and converts from this type (`for_query`); the caret unifies with it.
+spargebra = "0.4.7"
 
 # oxigraph pulls getrandom 0.3, whose wasm backend has to be selected explicitly —
 # the pairing ikigai-sparql uses.

@@ -55,6 +55,7 @@ mod map;
 mod mapping;
 #[cfg(not(target_family = "wasm"))]
 mod named;
+mod sparql;
 mod vocab;
 
 pub use lift::{lift, DocRef};
@@ -183,10 +184,7 @@ impl Endpoint for LiftEndpoint {
                 } else {
                     (m.to_string(), "urn:markdown:mapping:inline".to_string())
                 };
-                Mapping::parse(&turtle, &base).map_err(|detail| Error::InvalidArgument {
-                    name: "mapping".to_string(),
-                    detail,
-                })?
+                Mapping::parse_checked(&turtle, &base)?
             }
         };
 
@@ -203,12 +201,7 @@ impl Endpoint for LiftEndpoint {
 
         let doc = doc_ref(inv.inline_str("path").ok(), source.as_deref())?;
         let mut quads = lift(&markdown, &doc, &mapping.profile);
-        let domain = apply(&quads, &doc.iri, &mapping.constructs).map_err(|detail| {
-            Error::InvalidArgument {
-                name: "mapping".to_string(),
-                detail,
-            }
-        })?;
+        let domain = map::apply_checked(&quads, &doc.iri, &mapping.constructs)?;
         quads.extend(domain);
         let bytes = serialize(&quads, trig).map_err(Error::Endpoint)?;
         let media = if trig { TRIG } else { NQUADS };
