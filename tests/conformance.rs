@@ -26,8 +26,18 @@ fn conforms() {
     let scratch = Scratch::new("conformance");
     scratch.install_example("example");
     let home = Arc::new(MappingHome::new(Some(scratch.path().to_path_buf())));
-    let kernel = Kernel::new(Arc::new(ikigai_markdown::space_with(home)));
+    // Built once and handed to both the kernel and the suite, so the space the walk
+    // covers is the one SPACE-NAME checks.
+    let space = Arc::new(ikigai_markdown::space_with(home));
+    let kernel = Kernel::new(space.clone());
     let report = Suite::new()
+        // Neither constructor is configuration-free (ledger #987), so neither names
+        // itself and the host names the instance it mounts. `space_with(home)` is
+        // built over the home it is handed; `space()` reads this machine's config
+        // home from the environment while it is built (on native; the wasm build has
+        // no named-mapping door and reads nothing).
+        .host_named_space("ikigai_markdown::space_with(home)", space)
+        .host_named_space("ikigai_markdown::space()", ikigai_markdown::space())
         // The module DEFINES this namespace: `urn:markdown:vocabulary` serves it.
         .namespace(ikigai_markdown::MD)
         .pure(ikigai_markdown::VOCABULARY_ID)
