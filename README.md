@@ -74,8 +74,14 @@ cut. Editing the mapping re-lifts every document under it with no rebuild.
 - **UNION scoping.** A `FILTER` inside a `UNION` branch only sees that branch's
   variables. If you bind `?path` once outside the branches, the filters silently match
   nothing.
+- **OPTIONAL scoping.** An `OPTIONAL` group is evaluated on its own and joined
+  afterwards, so it cannot see a variable bound outside it.
+  `?h md:text ?t OPTIONAL { BIND(IRI(CONCAT("urn:ex:", STR(?t))) AS ?x) }` leaves `?x`
+  unbound on every row, and every template triple that uses `?x` silently disappears.
+  It is SPARQL's scoping, not a bug, and the same as the UNION trap above. Put the
+  `BIND` outside the `OPTIONAL`, or move the pattern that binds `?t` inside it.
 - **Two regex dialects.** `md:pattern` is a Rust `regex` (stage 1): named groups and
-  `(?m)` work there. `REGEX`/`REPLACE` inside a construct use SPARQL's XPath flavour.
+  `(?m)` work there. `REGEX`/`REPLACE` inside a construct use SPARQL's XPath flavor.
 - **Unbound on purpose.** `BIND(IF(cond, value, ?unbound) AS ?x)` leaves `?x` unbound
   when `cond` is false. A CONSTRUCT template triple with an unbound variable is simply
   not emitted, and that's how one construct writes different predicates per row.
@@ -121,8 +127,10 @@ under it. A name with no `mapping.ttl` behind it is a **not-found** naming the p
 looked at; there is no fallback to another mapping, and none to an unmapped lift.
 
 A host mounts `ikigai_markdown::space()` for this machine's config home, or
-`space_with(MappingHome::new(home))` to serve another. On wasm there is no config home
-and the endpoint is simply not bound.
+`space_with(Arc::new(MappingHome::new(Some(home))))` to serve another (`home` is a
+`PathBuf` naming the `ikigai` directory itself; `None` is a host with no config home,
+where a named mapping is a not-found). On wasm there is no config home and the
+endpoint is simply not bound.
 
 ## `mappings/example`: a worked mapping
 
