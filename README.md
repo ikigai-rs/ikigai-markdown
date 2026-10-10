@@ -87,6 +87,15 @@ cut. Editing the mapping re-lifts every document under it with no rebuild.
   does not error and the number looks plausible: counting one corpus's changes this way
   gave 1263 for a true 496. Aggregate with `COUNT(DISTINCT ?x)`, and reach for
   `SELECT DISTINCT` in a subquery before summing.
+- **A construct is bounded, because a mapping is caller text.** The bounds are
+  `ikigai-store`'s, so they read the same everywhere: at most 1 MiB, nesting at most 64
+  brackets (or a run of `!`), at most 32 patterns in one group (a sequence path counts
+  one a step), and at most 1024 algebra operators in all. Past any of them the lift is
+  refused with an `InvalidArgument` on `mapping` naming the bound, before the query is
+  parsed or planned. A real mapping is far inside all four. The bounds keep a construct
+  from overflowing the stack and aborting the host, or planning for minutes. They do
+  NOT bound evaluation time, so a cross product of unrelated patterns over a long
+  document can still run for a long time.
 
 ## Finding a mapping by name
 
