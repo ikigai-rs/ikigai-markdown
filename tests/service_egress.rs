@@ -178,6 +178,36 @@ fn a_service_in_a_mapping_is_refused_on_mapping_and_fetches_nothing() {
     );
 }
 
+/// The exact detail a lift's `SERVICE` refusal carries (ledger #1108): the ecosystem's shared
+/// first sentence, then THIS crate's remedy. Before ikigai-store 0.2.11 the remedy was the
+/// store's own ("sink it into `urn:iki:store:load`"), which is wrong advice inside a mapping.
+const PINNED: &str = "md:construct: `SERVICE` is not available here: a federated call would be \
+     an outbound request from inside a SPARQL string, gated by no network capability, and no \
+     grant opens it. Nothing was evaluated. A mapping's constructs read only the document \
+     being lifted: fetch remote data through the kernel, where the network capability \
+     applies, and pass it in as a document of its own.";
+
+#[test]
+fn the_refusal_names_a_mapping_remedy_not_the_stores() {
+    let stub = Stub::start();
+    let (_, construct) = &service_constructs(&stub.url())[0];
+    match lift(&mapping(construct)) {
+        Err(Error::InvalidArgument { name, detail }) => {
+            assert_eq!(name, "mapping");
+            assert!(
+                !detail.contains("urn:iki:store:load"),
+                "the refusal gives the store's remedy: {detail}"
+            );
+            assert_eq!(detail, PINNED);
+        }
+        other => panic!("not refused on `mapping`: {other:?}"),
+    }
+    // The public API returns the same detail, without the typed wrapper.
+    let parsed = ikigai_markdown::Mapping::parse(&mapping(construct), "urn:test:mapping");
+    assert_eq!(parsed.map(|m| m.constructs).unwrap_err(), PINNED);
+    assert_eq!(stub.requests(), Vec::<String>::new());
+}
+
 #[test]
 fn the_public_parse_and_apply_refuse_a_service_too() {
     let stub = Stub::start();

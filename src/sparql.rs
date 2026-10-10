@@ -39,9 +39,10 @@
 //!    service handler on every plain `SparqlEvaluator`, and a `SERVICE <http://…>` in a
 //!    mapping became an outbound request no `urn:cap:net:*` gates: measured through
 //!    `urn:markdown:lift` against a 127.0.0.1 stub, four lifts sent it 27 requests
-//!    (`tests/service_egress.rs`). [`service::refuse_service`] refuses one anywhere in the
-//!    algebra (`EXISTS`, `OPTIONAL`, `LATERAL`, a variable name, `SILENT`) before evaluation,
-//!    and [`service::evaluator`] refuses the call itself behind it. `LOAD` needs no check
+//!    (`tests/service_egress.rs`). [`service::refuse_service_with`] refuses one anywhere in
+//!    the algebra (`EXISTS`, `OPTIONAL`, `LATERAL`, a variable name, `SILENT`) before
+//!    evaluation, worded for a mapping rather than the store (ledger #1108), and
+//!    [`service::evaluator`] refuses the call itself behind it. `LOAD` needs no check
 //!    here: it is an UPDATE, and this module only ever parses a QUERY, so a `LOAD` is refused
 //!    as not SPARQL before anything evaluates.
 //!
@@ -56,6 +57,13 @@ use oxigraph::store::Store;
 
 /// The argument every mapping's SPARQL arrives in.
 pub(crate) const ARG: &str = "mapping";
+
+/// What a mapping author does instead of a `SERVICE`, after the ecosystem's shared first
+/// sentence ([`service::SERVICE_REFUSAL`]). Not the store's own remedy, which tells the caller
+/// to sink into `urn:iki:store:load` — wrong advice inside a mapping (ledger #1108).
+const SERVICE_REMEDY: &str = "A mapping's constructs read only the document being lifted: \
+     fetch remote data through the kernel, where the network capability applies, and pass it \
+     in as a document of its own.";
 
 /// A refusal on [`ARG`].
 pub(crate) fn refuse(detail: impl Into<String>) -> Error {
@@ -79,7 +87,7 @@ pub(crate) fn construct(text: &str, store: &Store, what: &str) -> Result<Option<
             .parse_query(text)
             .map_err(|e| refuse(format!("{what} is not valid SPARQL: {e}")))?;
         budget::check_query(&query, ARG).map_err(bounded)?;
-        service::refuse_service(&query, ARG).map_err(bounded)?;
+        service::refuse_service_with(&query, ARG, Some(SERVICE_REMEDY)).map_err(bounded)?;
         let results = service::evaluator()
             .for_query(query)
             .on_store(store)

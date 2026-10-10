@@ -51,10 +51,12 @@ oxigraph = { version = "0.5.11", default-features = false }
 # than copied, so there is one set of constants (ledger #976 is where they get a shared
 # home). Default features off: no RocksDB, and it builds for wasm. What it adds to this
 # crate's graph is the `toml` stack, `serde_json` and `indexmap`, all pure Rust.
-# 0.2.10 is the TRUE floor: `limits` arrived in 0.2.7, `budget::check_query` in 0.2.8, and
-# `service` (the refusing evaluator and the `SERVICE` door check, ledger #1085) in 0.2.10.
-# ⚠ `"0.2.10"` is a CEILING as well as a floor — `<0.3.0`.
-ikigai-store = { version = "0.2.10", default-features = false }
+# 0.2.11 is the TRUE floor: `limits` arrived in 0.2.7, `budget::check_query` in 0.2.8,
+# `service` (the refusing evaluator and the `SERVICE` door check, ledger #1085) in 0.2.10, and
+# `service::refuse_service_with`, which words the refusal for a mapping rather than the store
+# (ledger #1108), in 0.2.11.
+# ⚠ `"0.2.11"` is a CEILING as well as a floor — `<0.3.0`.
+ikigai-store = { version = "0.2.11", default-features = false }
 # The parser oxigraph itself uses, named so a construct's ALGEBRA can be measured by
 # `budget::check_query` before oxigraph plans it. Already in the graph through oxigraph,
 # which pins `=0.4.7` and converts from this type (`for_query`); the caret unifies with it.
