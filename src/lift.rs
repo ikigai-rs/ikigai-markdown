@@ -34,7 +34,7 @@
 use oxigraph::model::{GraphName, Literal, NamedNode, NamedOrBlankNode, Quad, Term};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use yaml_rust2::parser::{Event as YamlEvent, MarkedEventReceiver, Parser as YamlParser};
-use yaml_rust2::scanner::Marker;
+use yaml_rust2::scanner::{Marker, ScanError};
 
 use crate::mapping::Profile;
 use crate::vocab::{md, RDF_TYPE, XSD_BOOLEAN, XSD_INTEGER};
@@ -688,6 +688,26 @@ impl MarkedEventReceiver for YamlFields {
     }
 }
 
+/// Feed the first YAML document's events to `receiver`, in a loop.
+///
+/// ★ Not `Parser::load`, which is what this called until ledger #963: `load` RECURSES once
+/// per level of nesting, and the frontmatter is caller text, so `- - - … x` (two bytes a
+/// level, and ordinary YAML) 100,000 deep overflowed the stack and aborted the whole host.
+/// The parser's event loop keeps an explicit stack, and so does [`YamlFields`], so
+/// pulling the events one at a time recurses on nothing. It sees exactly what `load` with
+/// `multi = false` did: the stream's events up to the end of the first document.
+fn read_yaml(yaml: &str, receiver: &mut YamlFields) -> Result<(), ScanError> {
+    let mut parser = YamlParser::new_from_str(yaml);
+    loop {
+        let (event, mark) = parser.next_token()?;
+        let end = matches!(event, YamlEvent::DocumentEnd | YamlEvent::StreamEnd);
+        receiver.on_event(event, mark);
+        if end {
+            return Ok(());
+        }
+    }
+}
+
 fn frontmatter(
     yaml: &str,
     start: usize,
@@ -703,7 +723,7 @@ fn frontmatter(
     out.rel(doc.iri.clone(), "frontmatter", fm);
 
     let mut receiver = YamlFields::default();
-    if let Err(e) = YamlParser::new_from_str(yaml).load(&mut receiver, false) {
+    if let Err(e) = read_yaml(yaml, &mut receiver) {
         out.text(doc.iri.clone(), "frontmatterError", &e.to_string());
         return;
     }
