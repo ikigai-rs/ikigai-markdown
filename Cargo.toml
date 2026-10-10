@@ -58,12 +58,17 @@ futures = "0.3"
 # `tests/tree_guard.rs` holds the tokens it forbids as SHA-256 hashes, so that the
 # guard can scan itself and pass.
 sha2 = "0.10"
-# The module recipe as one test (`tests/conformance.rs`).
-ikigai-conformance = "0.3.0"
+# The module recipe as one test (`tests/conformance.rs`). 0.6.0 for SPACE-NAME (ledger
+# #987), the newest published. ⚠ A CEILING as well as a floor: `<0.7.0`.
+# Its own floor, `ikigai-core = "0.1.89"`, pulls a new enough kernel into every TEST
+# build, so `[dependencies] ikigai-core` above stays at what the LIBRARY needs: the
+# library names no space and uses nothing from 0.1.89.
+ikigai-conformance = "0.6.0"
 # The REPL engine, for `tests/pipeline.rs`: whether `source urn:file:x.md |
 # urn:markdown:lift` routes is decided by the engine, which a kernel-level test
-# cannot see.
-ikigai-engine = "0.1.23"
+# cannot see. 0.1.43: 0.1.23 pulls an `ikigai-resolve` that predates core's `Resolved`
+# change, and conformance 0.6.0 brings core 0.1.89 into the test build.
+ikigai-engine = "0.1.43"
 # The engine reads each contract as `Meta as=application/json`; without a renderer
 # it fails open and the pipeline tests prove nothing.
 serde_json = "1"
