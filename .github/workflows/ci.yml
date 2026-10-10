@@ -8,5 +8,10 @@ concurrency:
 jobs:
   ci:
     uses: ikigai-rs/.github/.github/workflows/rust.yml@main
+    # `features: http-client` is a GATE (ledger #1085): it turns on `oxigraph/http-client`, which
+    # `ikigai-cli` gets from rudof by unification, so `tests/service_egress.rs` runs against a
+    # local stub in the build where a mapping's `SERVICE` WOULD reach the network, and proves it
+    # does not. The default `test` job runs the same file without it.
     with:
       wasm-lib: true
+      features: http-client

@@ -34,13 +34,24 @@
 //! the token, an overdue count) is private to it, and a copy is not a small change. It is
 //! ledger #976's to share.
 //!
+//! 4. ★ **No `SERVICE`, in any build** (ledger #1085, #1083). A host whose graph enables
+//!    `oxigraph/http-client` (rudof does, so `ikigai-cli` does) gets oxigraph's default HTTP
+//!    service handler on every plain `SparqlEvaluator`, and a `SERVICE <http://…>` in a
+//!    mapping became an outbound request no `urn:cap:net:*` gates: measured through
+//!    `urn:markdown:lift` against a 127.0.0.1 stub, four lifts sent it 27 requests
+//!    (`tests/service_egress.rs`). [`service::refuse_service`] refuses one anywhere in the
+//!    algebra (`EXISTS`, `OPTIONAL`, `LATERAL`, a variable name, `SILENT`) before evaluation,
+//!    and [`service::evaluator`] refuses the call itself behind it. `LOAD` needs no check
+//!    here: it is an UPDATE, and this module only ever parses a QUERY, so a `LOAD` is refused
+//!    as not SPARQL before anything evaluates.
+//!
 //! Every refusal is a typed [`Error::InvalidArgument`] on `mapping`, the argument that
 //! carried the text.
 
 use ikigai_core::{Error, Result};
-use ikigai_store::{budget, limits};
+use ikigai_store::{budget, limits, service};
 use oxigraph::model::Triple;
-use oxigraph::sparql::{QueryResults, SparqlEvaluator};
+use oxigraph::sparql::QueryResults;
 use oxigraph::store::Store;
 
 /// The argument every mapping's SPARQL arrives in.
@@ -68,7 +79,8 @@ pub(crate) fn construct(text: &str, store: &Store, what: &str) -> Result<Option<
             .parse_query(text)
             .map_err(|e| refuse(format!("{what} is not valid SPARQL: {e}")))?;
         budget::check_query(&query, ARG).map_err(bounded)?;
-        let results = SparqlEvaluator::new()
+        service::refuse_service(&query, ARG).map_err(bounded)?;
+        let results = service::evaluator()
             .for_query(query)
             .on_store(store)
             .execute()

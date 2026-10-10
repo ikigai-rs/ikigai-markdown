@@ -102,6 +102,12 @@ cut. Editing the mapping re-lifts every document under it with no rebuild.
   from overflowing the stack and aborting the host, or planning for minutes. They do
   NOT bound evaluation time, so a cross product of unrelated patterns over a long
   document can still run for a long time.
+- **A construct reads only the document: no `SERVICE`.** A `SERVICE` anywhere in a
+  construct (inside `EXISTS` or `OPTIONAL`, `SILENT`, or with a variable name) is refused
+  with an `InvalidArgument` on `mapping` before anything is evaluated, in every build. In
+  a host whose dependency graph turns on oxigraph's HTTP client, it would otherwise be an
+  outbound request that no network capability gates. To join remote data, fetch it
+  through the kernel, where the net capability applies.
 
 ## Finding a mapping by name
 
