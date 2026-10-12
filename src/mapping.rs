@@ -95,14 +95,21 @@ impl Mapping {
     /// assert!(m.constructs.is_empty());
     /// ```
     pub fn parse(turtle: &str, base: &str) -> Result<Mapping, String> {
-        Mapping::parse_checked(turtle, base).map_err(crate::sparql::detail)
+        let capability = crate::sparql::no_grants();
+        let allowance = crate::sparql::Allowance::new(crate::sparql::uncalled(), &capability);
+        Mapping::parse_checked(turtle, base, &allowance).map_err(crate::sparql::detail)
     }
 
     /// [`Mapping::parse`] with its refusals typed: an [`ikigai_core::Error::InvalidArgument`]
     /// on `mapping` for anything wrong with the mapping, and whatever else running a
     /// construct can fail with (a thread that could not be started is
-    /// [`ikigai_core::Error::Unavailable`], a transient condition, not a bad mapping).
-    pub(crate) fn parse_checked(turtle: &str, base: &str) -> ikigai_core::Result<Mapping> {
+    /// [`ikigai_core::Error::Unavailable`], a transient condition, not a bad mapping, and
+    /// running past `allowance` is [`ikigai_core::Error::Timeout`]).
+    pub(crate) fn parse_checked(
+        turtle: &str,
+        base: &str,
+        allowance: &crate::sparql::Allowance<'_>,
+    ) -> ikigai_core::Result<Mapping> {
         let (profile, texts) = read(turtle, base).map_err(crate::sparql::refuse)?;
         // Syntax, then form: evaluated over an empty store, a CONSTRUCT answers with a
         // graph and anything else does not. Caller text, so through the bounds (ledger #963).
@@ -110,7 +117,7 @@ impl Mapping {
             Store::new().map_err(|e| crate::sparql::refuse(format!("in-memory store: {e}")))?;
         let mut constructs = Vec::new();
         for text in texts {
-            if crate::sparql::construct(&text, &empty, "md:construct")?.is_none() {
+            if crate::sparql::construct(&text, &empty, "md:construct", allowance)?.is_none() {
                 return Err(crate::sparql::refuse(
                     "md:construct must be a CONSTRUCT query",
                 ));

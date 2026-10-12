@@ -47,6 +47,16 @@
 //! kernel, and every sub-resolution runs under the caller's capability — so the
 //! caller needs whatever reading `src` and `mapping` needs, enforced where they are
 //! served, and nothing more.
+//!
+//! ## Time: the caller's budget
+//!
+//! A mapping's constructs are caller text, and so is the document they run over, so
+//! a lift's SPARQL runs within a time budget (ledger #1344): the space's
+//! [`EvaluationBudget`], chosen per caller exactly as `ikigai-store`'s doors choose
+//! it — the base for everyone (5 s unless the host says otherwise), raised by a
+//! `urn:cap:store:budget:<ms>` grant, the ceiling for root. It covers ALL of one
+//! lift's constructs together. Past it the caller gets a typed `Timeout`; see
+//! [`space_with_budget`] for what a host sets.
 
 #![forbid(unsafe_code)]
 
@@ -58,6 +68,9 @@ mod named;
 mod sparql;
 mod vocab;
 
+/// The time budget a lift's SPARQL runs under, re-exported so a host can set one with
+/// [`space_with_budget`] without naming `ikigai-store` itself.
+pub use ikigai_store::{EvaluationBudget, TimeBudget};
 pub use lift::{lift, DocRef};
 pub use map::{apply, serialize};
 pub use mapping::{Citation, Mapping, Profile, Split};
@@ -94,14 +107,16 @@ pub const VOCABULARY: &str = include_str!("vocabulary.ttl");
 
 /// The module's space over **this machine's** config home: `urn:markdown:lift` and
 /// `urn:markdown:vocabulary` everywhere, plus `urn:markdown:mapping:{name}` on hosts
-/// that have a filesystem. Mount this in a host kernel's root.
+/// that have a filesystem. Mount this in a host kernel's root. Its lifts run under
+/// the default [`EvaluationBudget`]: 5 s for every caller, up to 120 s by a grant, 120 s
+/// for root.
 ///
 /// On wasm the named-mapping endpoint is absent rather than present-and-failing:
 /// an action in the manifold that cannot succeed is worse than one not offered.
 pub fn space() -> EndpointSpace {
     #[cfg(target_family = "wasm")]
     {
-        base_space()
+        base_space(EvaluationBudget::default())
     }
     #[cfg(not(target_family = "wasm"))]
     {
@@ -114,16 +129,47 @@ pub fn space() -> EndpointSpace {
 /// mappings it reads are ones it wrote.
 #[cfg(not(target_family = "wasm"))]
 pub fn space_with(home: std::sync::Arc<MappingHome>) -> EndpointSpace {
-    base_space().bind(
+    space_with_budget(home, EvaluationBudget::default())
+}
+
+/// [`space_with`], with the lift's SPARQL running under `budget` (ledger #1344).
+///
+/// A caller gets the budget's base, raised by the largest `urn:cap:store:budget:<ms>`
+/// grant its capability holds and never above the ceiling; root gets the ceiling. All
+/// of one lift's constructs share that one allowance, and past it the caller is
+/// answered with a typed `Timeout`. An evaluation oxigraph cannot stop (a cross product
+/// over rows in memory) runs on after its caller was answered; while the budget's
+/// `max_overdue` are, a lift is refused at once with a transient `Unavailable`. Every
+/// lift through this space shares `budget`'s count, so pass one per host, not one per
+/// space you mount for the same callers.
+///
+/// ```
+/// use std::sync::Arc;
+/// use std::time::Duration;
+/// use ikigai_markdown::{EvaluationBudget, MappingHome, TimeBudget};
+///
+/// // An anonymous door: half a second for everyone, ten seconds at most by a grant.
+/// let budget = EvaluationBudget::new(
+///     TimeBudget::new(Duration::from_millis(500)).with_ceiling(Duration::from_secs(10)),
+/// );
+/// let space = ikigai_markdown::space_with_budget(Arc::new(MappingHome::ambient()), budget);
+/// # let _ = space;
+/// ```
+#[cfg(not(target_family = "wasm"))]
+pub fn space_with_budget(
+    home: std::sync::Arc<MappingHome>,
+    budget: EvaluationBudget,
+) -> EndpointSpace {
+    base_space(budget).bind(
         ikigai_core::UriTemplate::parse(MAPPING_TEMPLATE)
             .expect("MAPPING_TEMPLATE is a valid template"),
         mapping_endpoint(home),
     )
 }
 
-fn base_space() -> EndpointSpace {
+fn base_space(budget: EvaluationBudget) -> EndpointSpace {
     EndpointSpace::new()
-        .bind(Exact::new(LIFT_IRI), LiftEndpoint)
+        .bind(Exact::new(LIFT_IRI), LiftEndpoint { budget })
         .bind(Exact::new(VOCABULARY_IRI), vocabulary_endpoint())
 }
 
@@ -149,7 +195,10 @@ fn vocabulary_endpoint() -> FnEndpoint {
     )
 }
 
-struct LiftEndpoint;
+struct LiftEndpoint {
+    /// Shared by every lift through this space, so the overdue count caps cores.
+    budget: EvaluationBudget,
+}
 
 #[async_trait]
 impl Endpoint for LiftEndpoint {
@@ -175,17 +224,22 @@ impl Endpoint for LiftEndpoint {
         };
 
         // The mapping: optional; a reference or Turtle by value.
-        let mapping = match inv.inline_str("mapping") {
-            Err(_) => Mapping::default(),
-            Ok(m) => {
-                let (turtle, base) = if is_reference(m) {
-                    let iri = parse_iri("mapping", m)?;
-                    (text(inv.source(&iri).await?, "mapping")?, m.to_string())
-                } else {
-                    (m.to_string(), "urn:markdown:mapping:inline".to_string())
-                };
-                Mapping::parse_checked(&turtle, &base)?
+        let mapping_text = match inv.inline_str("mapping") {
+            Err(_) => None,
+            Ok(m) if is_reference(m) => {
+                let iri = parse_iri("mapping", m)?;
+                Some((text(inv.source(&iri).await?, "mapping")?, m.to_string()))
             }
+            Ok(m) => Some((m.to_string(), "urn:markdown:mapping:inline".to_string())),
+        };
+
+        // The caller's time budget, for every construct of this lift together (ledger
+        // #1344). It starts once `src` and `mapping` have resolved: it bounds the SPARQL,
+        // not the reading of the inputs, which their own endpoints answer for.
+        let allowance = sparql::Allowance::new(&self.budget, inv.capability);
+        let mapping = match mapping_text {
+            None => Mapping::default(),
+            Some((turtle, base)) => Mapping::parse_checked(&turtle, &base, &allowance)?,
         };
 
         let trig = match inv.inline_str("as").map(str::trim) {
@@ -201,7 +255,7 @@ impl Endpoint for LiftEndpoint {
 
         let doc = doc_ref(inv.inline_str("path").ok(), source.as_deref())?;
         let mut quads = lift(&markdown, &doc, &mapping.profile);
-        let domain = map::apply_checked(&quads, &doc.iri, &mapping.constructs)?;
+        let domain = map::apply_checked(&quads, &doc.iri, &mapping.constructs, &allowance)?;
         quads.extend(domain);
         let bytes = serialize(&quads, trig).map_err(Error::Endpoint)?;
         let media = if trig { TRIG } else { NQUADS };
