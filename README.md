@@ -99,9 +99,18 @@ cut. Editing the mapping re-lifts every document under it with no rebuild.
   one a step), and at most 1024 algebra operators in all. Past any of them the lift is
   refused with an `InvalidArgument` on `mapping` naming the bound, before the query is
   parsed or planned. A real mapping is far inside all four. The bounds keep a construct
-  from overflowing the stack and aborting the host, or planning for minutes. They do
-  NOT bound evaluation time, so a cross product of unrelated patterns over a long
-  document can still run for a long time.
+  from overflowing the stack and aborting the host, or planning for minutes.
+- **A lift answers within a time budget.** What those bounds leave is a cross product of
+  unrelated patterns, which over an ordinary document can run for minutes, so a lift's
+  constructs run under `ikigai-store`'s `EvaluationBudget`, with the budget chosen as the
+  store's doors choose it: **5 s** for every caller, raised by a
+  `urn:cap:store:budget:<ms>` grant, up to the ceiling (**120 s**), which root gets. It
+  covers all of one lift's constructs together, from when its inputs have resolved. Past
+  it the caller gets a typed `Timeout`. ⚠ oxigraph cannot stop a cross product partway,
+  so such an evaluation keeps a core busy after its caller was answered; while a quarter
+  of the machine's cores are held that way, a lift that needs SPARQL is refused at once
+  with a transient `Unavailable`. A host sets its own with `space_with_budget`. On wasm
+  there are no threads, and no deadline.
 - **A construct reads only the document: no `SERVICE`.** A `SERVICE` anywhere in a
   construct (inside `EXISTS` or `OPTIONAL`, `SILENT`, or with a variable name) is refused
   with an `InvalidArgument` on `mapping` before anything is evaluated, in every build. In
@@ -136,7 +145,10 @@ A host mounts `ikigai_markdown::space()` for this machine's config home, or
 `space_with(Arc::new(MappingHome::new(Some(home))))` to serve another (`home` is a
 `PathBuf` naming the `ikigai` directory itself; `None` is a host with no config home,
 where a named mapping is a not-found). On wasm there is no config home and the
-endpoint is simply not bound.
+endpoint is simply not bound. `space_with_budget(home, budget)` also sets the lifts'
+time budget (`ikigai_markdown::EvaluationBudget`, re-exported from `ikigai-store`): make
+one per host and pass it to every space you mount, since the cap on evaluations still
+running past their budget is counted per budget.
 
 ## `mappings/example`: a worked mapping
 

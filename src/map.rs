@@ -12,20 +12,25 @@ use crate::sparql::refuse;
 /// Refuses a construct that emits a blank node: the module recipe skolemizes, and
 /// a blank node minted per run would make two lifts of the same bytes differ. Each
 /// construct is caller text, so it runs inside the bounds `crate::sparql` applies
-/// (ledger #963).
+/// (ledger #963), and within a time budget: with no caller to raise it, the store's base
+/// (5 s) for all of `constructs` together (ledger #1344).
 pub fn apply(
     structural: &[Quad],
     graph: &NamedNode,
     constructs: &[String],
 ) -> Result<Vec<Quad>, String> {
-    apply_checked(structural, graph, constructs).map_err(crate::sparql::detail)
+    let capability = crate::sparql::no_grants();
+    let allowance = crate::sparql::Allowance::new(crate::sparql::uncalled(), &capability);
+    apply_checked(structural, graph, constructs, &allowance).map_err(crate::sparql::detail)
 }
 
-/// [`apply`] with its refusals typed, as [`crate::Mapping::parse`]'s twin is.
+/// [`apply`] with its refusals typed, as [`crate::Mapping::parse`]'s twin is, on what is left
+/// of `allowance`.
 pub(crate) fn apply_checked(
     structural: &[Quad],
     graph: &NamedNode,
     constructs: &[String],
+    allowance: &crate::sparql::Allowance<'_>,
 ) -> ikigai_core::Result<Vec<Quad>> {
     if constructs.is_empty() {
         return Ok(Vec::new());
@@ -45,7 +50,7 @@ pub(crate) fn apply_checked(
     let mut out = Vec::new();
     for (i, text) in constructs.iter().enumerate() {
         let what = format!("construct {}", i + 1);
-        let Some(triples) = crate::sparql::construct(text, &store, &what)? else {
+        let Some(triples) = crate::sparql::construct(text, &store, &what, allowance)? else {
             return Err(refuse(format!("{what} is not a CONSTRUCT query")));
         };
         for t in triples {
