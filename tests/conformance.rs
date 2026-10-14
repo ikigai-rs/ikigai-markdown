@@ -46,6 +46,11 @@ fn conforms() {
         .cacheable(ikigai_markdown::LIFT_ID)
         .cacheable(ikigai_markdown::MAPPING_ID)
         .fixture(Fixture::new(ikigai_markdown::MAPPING_ID, Verb::Source).binding("name", "example"))
+        // REQUIRED (0.8.0) drops `src` from this call and expects a typed refusal: with no
+        // `content` either, the lift answers `InvalidArgument` naming `src`. `content` is
+        // the by-value alternative, so `src` is "one of src/content" and the check cannot
+        // spell that; it stays declared required because the engine pipes into the one
+        // required input, and an all-optional lift could not be piped into at all.
         .fixture(
             Fixture::new(ikigai_markdown::LIFT_ID, Verb::Source)
                 .arg("src", "# A title\n\n- an item\n")
