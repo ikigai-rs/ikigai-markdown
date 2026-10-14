@@ -74,12 +74,13 @@ futures = "0.3"
 # `tests/tree_guard.rs` holds the tokens it forbids as SHA-256 hashes, so that the
 # guard can scan itself and pass.
 sha2 = "0.10"
-# The module recipe as one test (`tests/conformance.rs`). 0.6.0 for SPACE-NAME (ledger
-# #987), the newest published. ⚠ A CEILING as well as a floor: `<0.7.0`.
-# Its own floor, `ikigai-core = "0.1.89"`, pulls a new enough kernel into every TEST
+# The module recipe as one test (`tests/conformance.rs`). 0.8.0 for REQUIRED (each
+# required by-value input, dropped, must be refused typed) and the DECLARATIONS check on
+# fixture arguments, the newest published. ⚠ A CEILING as well as a floor: `<0.9.0`.
+# Its own floor, `ikigai-core = "0.1.100"`, pulls a new enough kernel into every TEST
 # build, so `[dependencies] ikigai-core` above stays at what the LIBRARY needs: the
-# library names no space and uses nothing from 0.1.89.
-ikigai-conformance = "0.6.0"
+# library names no space and uses nothing from 0.1.89 or later.
+ikigai-conformance = "0.8.0"
 # The REPL engine, for `tests/pipeline.rs`: whether `source urn:file:x.md |
 # urn:markdown:lift` routes is decided by the engine, which a kernel-level test
 # cannot see. 0.1.43: 0.1.23 pulls an `ikigai-resolve` that predates core's `Resolved`
