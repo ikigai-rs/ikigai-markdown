@@ -85,7 +85,12 @@ fn call_as(
 
 /// A snapshot of `docs` under the example mapping.
 fn snapshot(docs: &[(String, String)]) -> String {
-    let k = kernel(docs, &example(), None);
+    snapshot_under(docs, &example())
+}
+
+/// A snapshot of `docs` under `mapping`.
+fn snapshot_under(docs: &[(String, String)], mapping: &str) -> String {
+    let k = kernel(docs, mapping, None);
     call(
         &k,
         ikigai_markdown::SNAPSHOT_IRI,
@@ -98,14 +103,14 @@ fn snapshot(docs: &[(String, String)]) -> String {
     .unwrap()
 }
 
-/// The corpus check of `now` against a snapshot of `then`, under `mapping`.
+/// The corpus check of `now` against a snapshot of `then`, both under `mapping`.
 fn check(
     then: &[(String, String)],
     now: &[(String, String)],
     mapping: &str,
     extra: &[(&str, &str)],
 ) -> String {
-    let baseline = snapshot(then);
+    let baseline = snapshot_under(then, mapping);
     let k = kernel(now, mapping, Some(baseline.as_bytes()));
     let docs = list(now);
     let mut args = vec![
@@ -485,7 +490,7 @@ decisions/0001-use-turtle-for-mappings.md
   warning  key-unknown  frontmatter key `owner` is new since the baseline, and the mapping does not read it
 
 decisions/0002-cache-every-lift.md
-  error    citation-lost  citation `decision` \"0001\" is no longer recognized; at the baseline it read \"DR-0001\" on line 10
+  error    citation-lost  citation `decision` \"0001\" is no longer recognized (1 at the baseline, 0 now); at the baseline it read \"DR-0001\" on line 10
   error    field-lost  <urn:example:decision:0002> dr:cites <urn:example:decision:0001> is no longer produced
   error    field-lost  <urn:example:decision:0002> dr:date \"2026-02-03\"^^xsd:date is no longer produced
   error    field-lost  <urn:example:decision:0002> dr:status \"accepted\" is no longer produced
@@ -509,6 +514,153 @@ fn a_heading_that_moved_is_a_warning() {
     assert!(
         text.contains("  result: 0 errors, 1 warning, 0 notes\n"),
         "{text}"
+    );
+}
+
+/// The example mapping plus a construct that writes on each citation MATCH itself, as a
+/// mapping that keeps a record per citation does.
+fn with_citation_records() -> String {
+    let construct = r#"    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX dr: <http://example.org/decisions#>
+CONSTRUCT { ?match a dr:Citation ; dr:of ?target ; dr:from ?e . }
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "(^|/)decisions/[0-9]{4}-[^/]*[.]md$"))
+  BIND(IRI(CONCAT("urn:example:decision:", REPLACE(?path, "^(.*/)?decisions/([0-9]{4})-[^/]*[.]md$", "$2"))) AS ?e)
+  ?match a md:Match ; md:document ?doc ; md:matchedBy "decision" ; md:value ?num .
+  BIND(IRI(CONCAT("urn:example:decision:", ?num)) AS ?target)
+}
+""" ;
+
+"#;
+    let mapping = example().replacen(
+        "    # 4. Prose citations",
+        &format!("{construct}    # 4. Prose citations"),
+        1,
+    );
+    assert!(mapping.contains("dr:Citation"), "the construct went in");
+    mapping
+}
+
+/// The fixture's decision 2, citing DR-0007 `times` times.
+fn citing_0007(times: usize) -> String {
+    let fixture = &corpus(&[])[1];
+    assert_eq!(fixture.0, "decisions/0002-cache-every-lift.md");
+    let cites = vec!["DR-0007"; times].join(" and ");
+    fixture.1.replace(
+        "The measurements live in DR-0007.",
+        &format!("The measurements live in {cites}."),
+    )
+}
+
+#[test]
+fn two_identical_citations_becoming_one_is_one_finding_with_both_counts() {
+    // Two matches of one citation are one subject by name, so a construct that writes on
+    // a match writes each field twice there. Losing one copy is the citation's finding,
+    // counted, and not a field-lost for every field of the match restating it.
+    let then = corpus(&[(
+        "decisions/0002-cache-every-lift.md",
+        citing_0007(2).as_str(),
+    )]);
+    let text = check(&then, &corpus(&[]), &with_citation_records(), &[]);
+    assert!(
+        text.contains(
+            "  error    citation-lost  citation `decision` \"0007\" is recognized fewer times \
+             (2 at the baseline, 1 now); at the baseline it read \"DR-0007\" on line 15\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("  result: 1 error, 0 warnings, 0 notes\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_citation_lost_entirely_is_not_also_its_match_record_lost() {
+    // The match's own record goes with the citation: one finding. What the mapping wrote
+    // on the DECISION (its dr:cites) is another node's field, and is still reported.
+    let uncited = citing_0007(1).replace("The measurements live in DR-0007.", "None yet.");
+    let now = corpus(&[("decisions/0002-cache-every-lift.md", uncited.as_str())]);
+    let text = check(&corpus(&[]), &now, &with_citation_records(), &[]);
+    assert!(
+        text.contains(
+            "  error    citation-lost  citation `decision` \"0007\" is no longer recognized \
+             (1 at the baseline, 0 now); at the baseline it read \"DR-0007\" on line 15\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "  error    field-lost  <urn:example:decision:0002> dr:cites \
+             <urn:example:decision:0007> is no longer produced\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("  result: 2 errors, 0 warnings, 0 notes\n"),
+        "{text}"
+    );
+}
+
+/// The corpus check of the changed corpus against `baseline` as given.
+fn check_against(baseline: &str) -> Result<String, Error> {
+    let now = corpus(&[("decisions/0002-cache-every-lift.md", RECORD_AS_DETAILS)]);
+    let k = kernel(&now, &example(), Some(baseline.as_bytes()));
+    call(
+        &k,
+        ikigai_markdown::LINT_CORPUS_IRI,
+        &[
+            ("docs", &list(&now)),
+            ("root", ROOT),
+            ("mapping", MAPPING_IRI),
+            ("baseline", BASELINE),
+        ],
+    )
+}
+
+#[test]
+fn a_baseline_compares_the_same_in_any_line_order() {
+    // The check reads a baseline one document at a time by indexing where each graph's
+    // lines are, so it assumes no order: a snapshot sorts its lines whole, which puts a
+    // document's records far from its structure, and a baseline by value may be in any
+    // order, with comments and blank lines, one of which ends like a statement.
+    let snap = snapshot(&corpus(&[]));
+    let expected = check_against(&snap).unwrap();
+    assert!(expected.contains("citation-lost"), "{expected}");
+    let mut lines: Vec<&str> = snap.lines().collect();
+    lines.reverse();
+    let (a, b) = lines.split_at(lines.len() / 2);
+    let shuffled = format!(
+        "# a comment <urn:markdown:doc:phantom> .\n\n{}\n\n{}\n",
+        b.join("\n"),
+        a.join("\r\n")
+    );
+    assert_eq!(check_against(&shuffled).unwrap(), expected);
+}
+
+#[test]
+fn a_baseline_that_is_not_n_quads_is_refused_naming_the_line() {
+    let snap = snapshot(&corpus(&[]));
+    let mut lines: Vec<&str> = snap.lines().collect();
+    lines[2] = "<urn:a> <urn:b> \"unterminated <urn:markdown:doc:x> .";
+    let err = check_against(&lines.join("\n")).unwrap_err();
+    let Error::InvalidArgument { name, detail } = err else {
+        panic!("{err}");
+    };
+    assert_eq!(name, "baseline");
+    assert!(
+        detail.starts_with("the baseline is not N-Quads: Parser error at line 3 "),
+        "{detail}"
+    );
+    let mut lines: Vec<&str> = snap.lines().collect();
+    lines[4] = "<urn:a> <urn:b> <urn:c> .";
+    let err = check_against(&lines.join("\n")).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("holds a triple outside any named graph"),
+        "{err}"
     );
 }
 
