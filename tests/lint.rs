@@ -604,6 +604,57 @@ fn a_citation_lost_entirely_is_not_also_its_match_record_lost() {
     );
 }
 
+#[test]
+fn one_citation_becoming_two_is_one_note_with_both_counts() {
+    // The mirror of a count falling: a second match of one citation is the same subject by
+    // name, so the fields the construct writes on it arrive twice. That is the citation's
+    // finding, counted, and not "newly recognized" (it was recognized before), nor a
+    // field-gained for every field of the match restating it.
+    let now = corpus(&[(
+        "decisions/0002-cache-every-lift.md",
+        citing_0007(2).as_str(),
+    )]);
+    let text = check(&corpus(&[]), &now, &with_citation_records(), &[]);
+    assert!(
+        text.contains(
+            "  info     citation-gained  citation `decision` \"0007\" is recognized more times \
+             (1 at the baseline, 2 now); now it reads \"DR-0007\" on line 15\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("  result: 0 errors, 0 warnings, 1 note\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_citation_newly_recognized_is_not_also_its_match_record_gained() {
+    // The match's own record arrives with the citation: one finding. What the mapping
+    // wrote on the DECISION (its dr:cites) is another node's field, and is still reported.
+    let uncited = citing_0007(1).replace("The measurements live in DR-0007.", "None yet.");
+    let then = corpus(&[("decisions/0002-cache-every-lift.md", uncited.as_str())]);
+    let text = check(&then, &corpus(&[]), &with_citation_records(), &[]);
+    assert!(
+        text.contains(
+            "  info     citation-gained  citation `decision` \"0007\" is newly recognized \
+             (0 at the baseline, 1 now); now it reads \"DR-0007\" on line 15\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "  info     field-gained  <urn:example:decision:0002> dr:cites \
+             <urn:example:decision:0007> is newly produced\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("  result: 0 errors, 0 warnings, 2 notes\n"),
+        "{text}"
+    );
+}
+
 /// The corpus check of the changed corpus against `baseline` as given.
 fn check_against(baseline: &str) -> Result<String, Error> {
     let now = corpus(&[("decisions/0002-cache-every-lift.md", RECORD_AS_DETAILS)]);
