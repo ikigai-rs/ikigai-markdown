@@ -172,6 +172,61 @@ cargo run --release --example reconcile -- tests/fixtures/example example
 cargo run --release --example reconcile -- tests/fixtures/example mappings/example/mapping.ttl
 ```
 
+## Linting a mapping, and a corpus under it
+
+When a document format changes, a mapping can stop lifting some documents the way it
+used to, and nothing fails: the lift still answers, with less in it. The linter says
+what changed. It is four resources, each with a text face (the default) and a Turtle face
+(`as=text/turtle`), so it runs in any host that mounts the space:
+
+| resource | what it answers |
+|---|---|
+| `urn:markdown:lint:mapping mapping=…` | The mapping on its own. Every `md:split` and `md:citation` pattern compiles as a Rust regex, every `md:construct` parses and is a CONSTRUCT within the lift's bounds, and nothing writes a blank node. What the constructs write is checked against the shape the mapping states with `md:shape`. With no shape, the report says so. |
+| `urn:markdown:lint:expects mapping=…` | What the mapping depends on in a document, for the person writing the documents: the paths, frontmatter keys, headings, heading levels and citation forms it reads, and every other literal its constructs compare document text with. Read straight from the constructs' SPARQL algebra, with nothing run. |
+| `urn:markdown:lint:snapshot docs=… root=… mapping=…` | A list of documents (one IRI per line, so a list can be piped in) lifted and reduced to what the corpus check compares, as sorted N-Quads with one graph per document. Save it, and it is a baseline. |
+| `urn:markdown:lint:corpus docs=… root=… mapping=… baseline=…` | The documents lifted now, compared per document with a baseline snapshot. It reports records and fields lost, gained or changed, citations no longer recognized, headings the mapping reads that vanished or moved, frontmatter keys the mapping does not read, frontmatter that no longer parses, documents the lift cannot read, and values that break the stated shape. The output is sorted and deterministic. |
+
+`root` is an IRI prefix the documents share. What follows it is each document's path, and
+its graph is `urn:markdown:doc:{path}`, so a snapshot taken on one machine compares with a
+corpus on another. `ignore=` takes predicates (full IRIs, or prefixed names in the
+mapping's own prefixes) to leave out of the record comparison. Use it for a line number
+that a construct copies onto every record and that moves whenever a line is added above.
+
+**The baseline is a snapshot, not a git revision.** A snapshot is a resource like any
+other, so it is read through the kernel and keeps its golden thread. It needs no
+repository, and it records what the lift actually produced then. To compare with an
+earlier revision, take a snapshot of a copy of that revision.
+
+A finding has a severity and a stable code (`heading-vanished`, `citation-lost`,
+`field-lost`, `key-unknown`, `shape-violation`, …). An **error** means something the
+mapping relied on no longer holds, a **warning** deserves a look, and a **note** is a
+change that cannot break anything. A mapping that does not load is reported as a finding,
+not refused, because "this input is wrong" is the answer a linter exists to give.
+
+**The shape** is SHACL, written in the mapping itself: `md:shape` names node shapes. The
+linter checks a subset of SHACL Core and reports the rest as not checked: `sh:targetClass`,
+and on each `sh:property` with a single-predicate `sh:path`, `sh:minCount`, `sh:maxCount`,
+`sh:datatype`, `sh:nodeKind`, `sh:class` and `sh:in`. `mappings/example` states one.
+
+**Bounds.** A corpus is caller input, so every dimension is bounded, and past a bound the
+request is refused with the bound's name. It is never answered for part of the corpus:
+`MAX_DOCUMENTS` (10,000), `MAX_DOCUMENT_BYTES` (4 MiB), `MAX_CORPUS_BYTES` (64 MiB of
+documents), `MAX_SNAPSHOT_BYTES` (256 MiB, for the snapshot taken and for a baseline), and
+the caller's time budget, the same one a lift runs under, checked before each document.
+For a corpus larger than these, lint it in parts.
+
+From a terminal, `examples/lint.rs` wraps all four over files on disk:
+
+```text
+cargo run --release --example lint -- mapping  mappings/example/mapping.ttl
+cargo run --release --example lint -- expects  example
+cargo run --release --example lint -- snapshot tests/fixtures/example example > before.nq
+#   … edit the documents …
+cargo run --release --example lint -- corpus   tests/fixtures/example example --baseline before.nq
+```
+
+It exits 1 when a text report holds an error.
+
 ## Not here yet
 
 md→html, an HTML face, transreptor registration, and any write path.

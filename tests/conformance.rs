@@ -57,8 +57,34 @@ fn conforms() {
                 .arg("mapping", MAPPING)
                 .arg("path", "notes/a.md"),
         )
+        // The linter. Given a mapping by value, the mapping check and the expects report
+        // are functions of their arguments alone.
+        .pure(ikigai_markdown::LINT_MAPPING_ID)
+        .cacheable(ikigai_markdown::LINT_MAPPING_ID)
+        .fixture(
+            Fixture::new(ikigai_markdown::LINT_MAPPING_ID, Verb::Source).arg("mapping", MAPPING),
+        )
+        .pure(ikigai_markdown::LINT_EXPECTS_ID)
+        .cacheable(ikigai_markdown::LINT_EXPECTS_ID)
+        .fixture(
+            Fixture::new(ikigai_markdown::LINT_EXPECTS_ID, Verb::Source).arg("mapping", MAPPING),
+        )
+        // The snapshot and the corpus check read documents through the kernel, and keep
+        // their threads; any served resource is a document, so the vocabulary stands in.
+        .cacheable(ikigai_markdown::SNAPSHOT_ID)
+        .fixture(
+            Fixture::new(ikigai_markdown::SNAPSHOT_ID, Verb::Source)
+                .arg("docs", ikigai_markdown::VOCABULARY_IRI)
+                .arg("mapping", MAPPING),
+        )
+        .cacheable(ikigai_markdown::LINT_CORPUS_ID)
+        .fixture(
+            Fixture::new(ikigai_markdown::LINT_CORPUS_ID, Verb::Source)
+                .arg("docs", ikigai_markdown::VOCABULARY_IRI)
+                .arg("mapping", MAPPING),
+        )
         .run_blocking(&kernel);
     eprintln!("{report}");
     assert!(report.is_clean(), "{report}");
-    assert_eq!(report.endpoints, 3, "{report}");
+    assert_eq!(report.endpoints, 7, "{report}");
 }

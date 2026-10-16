@@ -31,6 +31,14 @@
 //! emits each split piece and each pattern match as a node, driven entirely by the
 //! profile, and dangling references become queryable data.
 //!
+//! ## The linter
+//!
+//! [`lint`] answers what a spec author asks when a document format changes: is the mapping
+//! itself sound (`urn:markdown:lint:mapping`), what does it depend on in a document
+//! (`urn:markdown:lint:expects`), and what no longer lifts the way it did at a saved
+//! snapshot (`urn:markdown:lint:snapshot`, `urn:markdown:lint:corpus`). Each is a resource
+//! with a text face and a Turtle face.
+//!
 //! ## Caching: two golden threads
 //!
 //! A lift is a pure function of **(document bytes, mapping bytes)**. `src` and
@@ -60,14 +68,24 @@
 
 #![forbid(unsafe_code)]
 
+mod analyze;
+mod compare;
+mod corpus;
 mod lift;
+pub mod lint;
 mod map;
 mod mapping;
 #[cfg(not(target_family = "wasm"))]
 mod named;
+mod shape;
 mod sparql;
 mod vocab;
 
+pub use corpus::{
+    LINT_CORPUS_ID, LINT_CORPUS_IRI, LINT_EXPECTS_ID, LINT_EXPECTS_IRI, LINT_MAPPING_ID,
+    LINT_MAPPING_IRI, MAX_CORPUS_BYTES, MAX_DOCUMENTS, MAX_DOCUMENT_BYTES, MAX_LIST_BYTES,
+    MAX_SNAPSHOT_BYTES, SNAPSHOT_ID, SNAPSHOT_IRI,
+};
 /// The time budget a lift's SPARQL runs under, re-exported so a host can set one with
 /// [`space_with_budget`] without naming `ikigai-store` itself.
 pub use ikigai_store::{EvaluationBudget, TimeBudget};
@@ -169,6 +187,15 @@ pub fn space_with_budget(
 
 fn base_space(budget: EvaluationBudget) -> EndpointSpace {
     EndpointSpace::new()
+        .bind(
+            Exact::new(SNAPSHOT_IRI),
+            corpus::SnapshotEndpoint {
+                budget: budget.clone(),
+            },
+        )
+        .bind(Exact::new(LINT_CORPUS_IRI), corpus::LintCorpusEndpoint)
+        .bind(Exact::new(LINT_EXPECTS_IRI), corpus::LintExpectsEndpoint)
+        .bind(Exact::new(LINT_MAPPING_IRI), corpus::LintMappingEndpoint)
         .bind(Exact::new(LIFT_IRI), LiftEndpoint { budget })
         .bind(Exact::new(VOCABULARY_IRI), vocabulary_endpoint())
 }
@@ -226,11 +253,7 @@ impl Endpoint for LiftEndpoint {
         // The mapping: optional; a reference or Turtle by value.
         let mapping_text = match inv.inline_str("mapping") {
             Err(_) => None,
-            Ok(m) if is_reference(m) => {
-                let iri = parse_iri("mapping", m)?;
-                Some((text(inv.source(&iri).await?, "mapping")?, m.to_string()))
-            }
-            Ok(m) => Some((m.to_string(), "urn:markdown:mapping:inline".to_string())),
+            Ok(m) => Some(mapping_text(inv, m).await?),
         };
 
         // The caller's time budget, for every construct of this lift together (ledger
@@ -328,10 +351,21 @@ impl Endpoint for LiftEndpoint {
     }
 }
 
+/// A `mapping` argument's Turtle and the base IRI to read it against: by reference, the
+/// resource's text and its IRI (its golden thread is kept); by value, the text itself.
+pub(crate) async fn mapping_text(inv: &Invocation<'_>, value: &str) -> Result<(String, String)> {
+    if is_reference(value) {
+        let iri = parse_iri("mapping", value)?;
+        Ok((text(inv.source(&iri).await?, "mapping")?, value.to_string()))
+    } else {
+        Ok((value.to_string(), "urn:markdown:mapping:inline".to_string()))
+    }
+}
+
 /// Whether an argument value is a reference rather than the thing itself: a single
 /// token with a URI scheme. Markdown or Turtle that happens to be exactly one such
 /// token is misread; `content=` (for markdown) is the explicit by-value form.
-fn is_reference(value: &str) -> bool {
+pub(crate) fn is_reference(value: &str) -> bool {
     let Some((scheme, rest)) = value.split_once(':') else {
         return false;
     };
@@ -343,7 +377,7 @@ fn is_reference(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
-fn parse_iri(name: &str, value: &str) -> Result<Iri> {
+pub(crate) fn parse_iri(name: &str, value: &str) -> Result<Iri> {
     Iri::parse(value).map_err(|e| Error::InvalidArgument {
         name: name.to_string(),
         detail: format!("`{value}` is not a valid IRI: {e}"),
@@ -359,7 +393,7 @@ fn text(repr: Representation, role: &str) -> Result<String> {
 
 /// Name the document: `urn:markdown:doc:{path}` when a path is given, else the IRI
 /// it was resolved from, else `urn:markdown:doc:anonymous`.
-fn doc_ref(path: Option<&str>, source: Option<&str>) -> Result<DocRef> {
+pub(crate) fn doc_ref(path: Option<&str>, source: Option<&str>) -> Result<DocRef> {
     let invalid = |detail: String| Error::InvalidArgument {
         name: "path".to_string(),
         detail,

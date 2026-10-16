@@ -34,23 +34,56 @@ impl MetaRenderer for JsonRenderer {
 
 const NOTE: &str = "# A Note\n\nBody text.\n";
 
-fn space() -> EndpointSpace {
-    ikigai_markdown::space().bind(
-        Exact::new("urn:test:note"),
-        FnEndpoint::new("note", |_| {
-            Ok(Representation::new(
-                ReprType::new("text/markdown"),
-                NOTE.as_bytes().to_vec(),
-            ))
-        })
-        .with_description(
-            Description::new("note")
-                .title("A note")
-                .summary("a markdown document for the pipeline tests")
-                .verb(Verb::Source)
-                .output("text/markdown"),
-        ),
+/// A list of documents, one IRI per line: what a corpus check takes on a pipe.
+const LIST: &str = "urn:test:note\n";
+
+/// A mapping with one construct, by reference.
+const MAPPING: &str = r#"@prefix md: <https://ikigai-rs.dev/ns/md#> .
+<urn:test:m> a md:Mapping ; md:construct """PREFIX md: <https://ikigai-rs.dev/ns/md#>
+CONSTRUCT { ?d <urn:test:title> ?t } WHERE { ?h a md:Heading ; md:document ?d ; md:text ?t }""" ."#;
+
+fn served(id: &'static str, media: &'static str, body: &'static str) -> FnEndpoint {
+    FnEndpoint::new(id, move |_| {
+        Ok(Representation::new(
+            ReprType::new(media),
+            body.as_bytes().to_vec(),
+        ))
+    })
+    .with_description(
+        Description::new(id)
+            .title("A test resource")
+            .summary("a resource for the pipeline tests")
+            .verb(Verb::Source)
+            .output(media),
     )
+}
+
+fn space() -> EndpointSpace {
+    ikigai_markdown::space()
+        .bind(
+            Exact::new("urn:test:list"),
+            served("list", "text/plain", LIST),
+        )
+        .bind(
+            Exact::new("urn:test:mapping"),
+            served("mapping", "text/turtle", MAPPING),
+        )
+        .bind(
+            Exact::new("urn:test:note"),
+            FnEndpoint::new("note", |_| {
+                Ok(Representation::new(
+                    ReprType::new("text/markdown"),
+                    NOTE.as_bytes().to_vec(),
+                ))
+            })
+            .with_description(
+                Description::new("note")
+                    .title("A note")
+                    .summary("a markdown document for the pipeline tests")
+                    .verb(Verb::Source)
+                    .output("text/markdown"),
+            ),
+        )
 }
 
 fn run(engine: &Engine, line: &str) -> Result<String, String> {
@@ -97,4 +130,51 @@ fn the_tests_above_would_notice_a_routing_defect() {
     let err = run(&blind, "source urn:test:note | urn:markdown:lift")
         .expect_err("a blind engine cannot route the value");
     assert!(err.contains("src"), "the value never reached src: {err}");
+}
+
+#[test]
+fn a_piped_list_is_the_corpus_a_check_reads() {
+    // `docs` and `mapping` are both required; with `mapping` named, the pipe fills `docs`.
+    let out = run(
+        &engine(),
+        "source urn:test:list | urn:markdown:lint:corpus mapping=urn:test:mapping",
+    )
+    .expect("pipe");
+    assert!(out.starts_with("markdown lint: corpus\n"), "{out}");
+    assert!(
+        out.contains("  documents: 1 now, no baseline to compare with\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_piped_list_is_snapshotted() {
+    let out = run(
+        &engine(),
+        "source urn:test:list | urn:markdown:lint:snapshot root=urn:test: mapping=urn:test:mapping",
+    )
+    .expect("pipe");
+    assert!(
+        out.contains("<urn:test:title> \"A Note\" <urn:markdown:doc:note> ."),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_piped_mapping_is_checked() {
+    let out = run(
+        &engine(),
+        "source urn:test:mapping | urn:markdown:lint:mapping",
+    )
+    .expect("pipe");
+    assert!(out.contains("  constructs: 1\n"), "{out}");
+    let out = run(
+        &engine(),
+        "source urn:test:mapping | urn:markdown:lint:expects",
+    )
+    .expect("pipe");
+    assert!(
+        out.contains("\nPredicates written\n  <urn:test:title>\n"),
+        "{out}"
+    );
 }
