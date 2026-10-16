@@ -17,7 +17,8 @@
 //! - records the mapping produced at the baseline and no longer does, or now newly does;
 //! - fields (a record's predicate and value) lost, gained, or changed (one value replaced
 //!   by one other);
-//! - citations no longer recognized, or newly recognized, counted per pattern and value;
+//! - citations recognized fewer or more times (no longer, or newly, among them), counted per
+//!   pattern and value;
 //! - headings the mapping reads (by text or by level) that vanished, or moved to another
 //!   level or another parent section;
 //! - frontmatter keys the mapping does not read (a warning when new since the baseline),
@@ -29,9 +30,10 @@
 //! A node the lift minted inside a document (`…#m3`, a citation match) is named by what it
 //! IS, `[match decision "0007"]`, not by its number, so a document that gains a paragraph
 //! does not renumber every record below it into a loss and a gain. So every match of one
-//! citation in a document is ONE subject, and a citation recognized fewer times is one
-//! finding, `citation-lost` with both counts: what the mapping wrote on the match is not
-//! reported again as a lost field, or a lost record, once per field.
+//! citation in a document is ONE subject, and a citation recognized fewer or more times is
+//! one finding, `citation-lost` or `citation-gained` with both counts: what the mapping wrote
+//! on the match is not reported again as a lost or gained field, or a lost or gained record,
+//! once per field.
 //!
 //! Each snapshot is read one document at a time (see `Snapshot`), so what the comparison
 //! holds beyond the two snapshots' bytes is one offset per line and one document from each,
@@ -725,8 +727,8 @@ fn document(
         }
         headings(expects, before, doc, &mut |f| out.push(at(f)));
     }
-    let fewer = citations(before, doc, &mut |f| out.push(at(f)));
-    records(before, doc, &fewer, &mut |f| out.push(at(f)));
+    let counted = citations(before, doc, &mut |f| out.push(at(f)));
+    records(before, doc, &counted, &mut |f| out.push(at(f)));
 }
 
 fn headings(expects: &Expectations, before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) {
@@ -790,10 +792,10 @@ fn headings(expects: &Expectations, before: &Doc, now: &Doc, push: &mut dyn FnMu
     }
 }
 
-/// Citations recognized fewer or more times than at the baseline. Answers the names of the
-/// matches recognized fewer times, whose loss this has reported.
-fn citations(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) -> BTreeSet<String> {
-    let mut fewer = BTreeSet::new();
+/// Citations recognized fewer or more times than at the baseline, each one finding with
+/// both counts. Answers the names of the matches whose count changed, which are reported.
+fn citations(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) -> Counted {
+    let mut counted = Counted::default();
     let keys: BTreeSet<&(String, String)> =
         before.matches.keys().chain(now.matches.keys()).collect();
     for key in keys {
@@ -817,29 +819,54 @@ fn citations(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) -> BTreeSet
                     n.len()
                 ),
             ));
-            fewer.insert(match_name(name, value));
+            counted.fewer.insert(match_name(name, value));
         } else if n.len() > b.len() {
             let (line, text) = &n[0];
+            let what = if b.is_empty() {
+                "is newly recognized"
+            } else {
+                "is recognized more times"
+            };
             push(Finding::new(
                 Severity::Info,
                 "citation-gained",
-                format!("citation `{name}` {value:?} is newly recognized: {text:?} on line {line}"),
+                format!(
+                    "citation `{name}` {value:?} {what} ({} at the baseline, {} now); now it \
+                     reads {text:?} on line {line}",
+                    b.len(),
+                    n.len()
+                ),
             ));
+            counted.more.insert(match_name(name, value));
         }
     }
-    fewer
+    counted
 }
 
-/// Records and their fields. A citation match recognized fewer times (`fewer`) is one
-/// finding, the citation's: every match of a citation is one subject by name, so each one
-/// lost takes a copy of every field the mapping wrote on it, and reporting those again as
-/// lost, or the record as lost, restates that finding once per field.
-fn records(before: &Doc, now: &Doc, fewer: &BTreeSet<String>, push: &mut dyn FnMut(Finding)) {
+/// The citation matches whose count changed, by name: their change is the citation's
+/// finding, so [`records`] does not report it again.
+#[derive(Default)]
+struct Counted {
+    /// Recognized fewer times than at the baseline.
+    fewer: BTreeSet<String>,
+    /// Recognized more times than at the baseline.
+    more: BTreeSet<String>,
+}
+
+/// Records and their fields. A citation match recognized fewer or more times (`counted`)
+/// is one finding, the citation's: every match of a citation is one subject by name, so
+/// each one lost or gained takes or adds a copy of every field the mapping wrote on it, and
+/// reporting those again as lost or gained, or the record as lost or gained, restates that
+/// finding once per field. Only the direction of the count is suppressed: a field the
+/// mapping newly writes on a match recognized fewer times is still reported.
+fn records(before: &Doc, now: &Doc, counted: &Counted, push: &mut dyn FnMut(Finding)) {
     let subjects: BTreeSet<&String> = before.produced.keys().chain(now.produced.keys()).collect();
     for s in subjects {
-        let counted = fewer.contains(s);
+        let fewer = counted.fewer.contains(s);
+        let more = counted.more.contains(s);
         match (before.produced.get(s), now.produced.get(s)) {
-            (Some(_), None) if counted => {}
+            (Some(_), None) if fewer => {}
+            (None, Some(_)) if more => {}
             (Some(b), None) => push(Finding::new(
                 Severity::Error,
                 "record-lost",
@@ -875,14 +902,14 @@ fn records(before: &Doc, now: &Doc, fewer: &BTreeSet<String>, push: &mut dyn FnM
                         ));
                         continue;
                     }
-                    for old in lost.into_iter().filter(|_| !counted) {
+                    for old in lost.into_iter().filter(|_| !fewer) {
                         push(Finding::new(
                             Severity::Error,
                             "field-lost",
                             format!("{s} {p} {old} is no longer produced"),
                         ));
                     }
-                    for new in gained {
+                    for new in gained.into_iter().filter(|_| !more) {
                         push(Finding::new(
                             Severity::Info,
                             "field-gained",
