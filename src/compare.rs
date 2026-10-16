@@ -28,7 +28,14 @@
 //!
 //! A node the lift minted inside a document (`…#m3`, a citation match) is named by what it
 //! IS, `[match decision "0007"]`, not by its number, so a document that gains a paragraph
-//! does not renumber every record below it into a loss and a gain.
+//! does not renumber every record below it into a loss and a gain. So every match of one
+//! citation in a document is ONE subject, and a citation recognized fewer times is one
+//! finding, `citation-lost` with both counts: what the mapping wrote on the match is not
+//! reported again as a lost field, or a lost record, once per field.
+//!
+//! Each snapshot is read one document at a time (see `Snapshot`), so what the comparison
+//! holds beyond the two snapshots' bytes is one offset per line and one document from each,
+//! plus, when the mapping states a shape, the triples the shape reads across the corpus.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -66,20 +73,150 @@ struct Doc {
     triples: Vec<Triple>,
 }
 
-/// Read a snapshot: N-Quads, one named graph per document.
-fn parse(bytes: &[u8], what: &str) -> Result<BTreeMap<String, Vec<Quad>>, String> {
-    let mut graphs: BTreeMap<String, Vec<Quad>> = BTreeMap::new();
-    for quad in RdfParser::from_format(RdfFormat::NQuads).for_slice(bytes) {
-        let quad = quad.map_err(|e| format!("{what} is not N-Quads: {e}"))?;
-        let GraphName::NamedNode(g) = &quad.graph_name else {
-            return Err(format!(
-                "{what} holds a triple outside any named graph, so it is not a snapshot \
-                 urn:markdown:lint:snapshot wrote: {quad}"
-            ));
+/// A snapshot, read one document at a time.
+///
+/// Indexing reads only each line's graph name, and keeps where the line starts; a
+/// document's quads are parsed when it is compared, and dropped after. So the memory a
+/// comparison holds beyond the snapshot's own bytes is one offset per line and the largest
+/// document, not the corpus, and no order of the lines is assumed: a snapshot sorts its
+/// lines whole, which puts one document's records and its structure far apart.
+struct Snapshot<'a> {
+    bytes: &'a [u8],
+    what: &'static str,
+    /// Each document's graph and where its lines start, sorted by graph.
+    graphs: Vec<(String, Vec<usize>)>,
+}
+
+impl<'a> Snapshot<'a> {
+    fn index(bytes: &'a [u8], what: &'static str) -> Result<Snapshot<'a>, String> {
+        let snapshot = Snapshot {
+            bytes,
+            what,
+            graphs: Vec::new(),
         };
-        graphs.entry(g.as_str().to_string()).or_default().push(quad);
+        let mut graphs: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        let mut start = 0;
+        while start < bytes.len() {
+            let end = bytes[start..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .map_or(bytes.len(), |i| start + i);
+            if let Some(graph) = snapshot.graph_of(start, &bytes[start..end])? {
+                match graphs.get_mut(graph.as_ref()) {
+                    Some(lines) => lines.push(start),
+                    None => {
+                        graphs.insert(graph.into_owned(), vec![start]);
+                    }
+                }
+            }
+            start = end + 1;
+        }
+        Ok(Snapshot {
+            graphs: graphs.into_iter().collect(),
+            ..snapshot
+        })
     }
-    Ok(graphs)
+
+    /// The graph a line's statement is in, or `None` for a line with none (blank, or a
+    /// comment). A line as a snapshot writes it, `… <graph> .`, is read for its last IRI
+    /// without parsing the rest, which [`Snapshot::document`] does and checks; any other
+    /// line is parsed here.
+    fn graph_of<'l>(
+        &self,
+        start: usize,
+        line: &'l [u8],
+    ) -> Result<Option<std::borrow::Cow<'l, str>>, String> {
+        let trimmed = line.trim_ascii();
+        let statement = trimmed.starts_with(b"<") || trimmed.starts_with(b"_:");
+        if let Some(body) = trimmed
+            .strip_suffix(b".")
+            .filter(|_| statement)
+            .map(<[u8]>::trim_ascii_end)
+        {
+            if let Some(inside) = body.strip_suffix(b">") {
+                if let Some(open) = inside.iter().rposition(|b| *b == b'<') {
+                    let iri = &inside[open + 1..];
+                    let separate = open > 0 && matches!(inside[open - 1], b' ' | b'\t');
+                    let plain = !iri
+                        .iter()
+                        .any(|b| matches!(b, b'\\' | b' ' | b'\t' | b'"' | b'>'));
+                    if separate && plain && !iri.is_empty() {
+                        if let Ok(iri) = std::str::from_utf8(iri) {
+                            return Ok(Some(iri.into()));
+                        }
+                    }
+                }
+            }
+        }
+        let mut quads = self.parse(start, line)?;
+        match (quads.pop(), quads.is_empty()) {
+            (None, _) => Ok(None),
+            (Some(quad), true) => Ok(Some(self.named(start, &quad)?.to_string().into())),
+            (Some(_), false) => Err(self.error(start, "holds more than one statement on a line")),
+        }
+    }
+
+    fn parse(&self, start: usize, line: &[u8]) -> Result<Vec<Quad>, String> {
+        RdfParser::from_format(RdfFormat::NQuads)
+            .for_slice(line)
+            .map(|q| {
+                q.map_err(|e| {
+                    // The parser saw one line, so its position says line 1.
+                    let e = e.to_string();
+                    let e = match e.strip_prefix("Parser error at line 1 ") {
+                        Some(rest) => format!("Parser error at line {} {rest}", self.line(start)),
+                        None => format!("{e} (line {})", self.line(start)),
+                    };
+                    format!("{} is not N-Quads: {e}", self.what)
+                })
+            })
+            .collect()
+    }
+
+    /// The graph `quad` is in, which in a snapshot is always a named one.
+    fn named<'q>(&self, start: usize, quad: &'q Quad) -> Result<&'q str, String> {
+        match &quad.graph_name {
+            GraphName::NamedNode(g) => Ok(g.as_str()),
+            _ => Err(format!(
+                "{} holds a triple outside any named graph, so it is not a snapshot \
+                 urn:markdown:lint:snapshot wrote: {quad} (line {})",
+                self.what,
+                self.line(start)
+            )),
+        }
+    }
+
+    /// The line number of the line starting at `start`: counted only for a message.
+    fn line(&self, start: usize) -> usize {
+        self.bytes[..start].iter().filter(|b| **b == b'\n').count() + 1
+    }
+
+    fn error(&self, start: usize, what: &str) -> String {
+        format!(
+            "{} {what}, so it is not a snapshot urn:markdown:lint:snapshot wrote (line {})",
+            self.what,
+            self.line(start)
+        )
+    }
+
+    /// The quads of the `i`th document.
+    fn document(&self, i: usize) -> Result<Vec<Quad>, String> {
+        let (graph, starts) = &self.graphs[i];
+        let mut out = Vec::with_capacity(starts.len());
+        for &start in starts {
+            let end = self.bytes[start..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .map_or(self.bytes.len(), |i| start + i);
+            for quad in self.parse(start, &self.bytes[start..end])? {
+                if self.named(start, &quad)? != graph {
+                    return Err(self.error(start, "holds more than one statement on a line"));
+                }
+                out.push(quad);
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// One document's lift reduced to what the comparison reads: everything the mapping
@@ -181,7 +318,14 @@ fn literal(t: &Term) -> Option<&str> {
     }
 }
 
-fn read_doc(graph: &str, quads: &[Quad], ignore: &BTreeSet<&str>) -> Doc {
+/// One document's graph, read. `shaped` is what the shape reads (`None`: no shape is
+/// stated), and only those triples are kept for it.
+fn read_doc(
+    graph: &str,
+    quads: &[Quad],
+    ignore: &BTreeSet<&str>,
+    shaped: Option<&BTreeSet<&str>>,
+) -> Doc {
     let md = |local: &str| format!("{MD}{local}");
     let mut props: BTreeMap<String, Vec<(&str, &Term)>> = BTreeMap::new();
     for q in quads.iter().filter(|q| structural(q)) {
@@ -270,7 +414,7 @@ fn read_doc(graph: &str, quads: &[Quad], ignore: &BTreeSet<&str>) -> Doc {
         if typed(iri, "Match") {
             let by = get(iri, &md("matchedBy")).and_then(literal).unwrap_or("");
             let value = get(iri, &md("value")).and_then(literal).unwrap_or("");
-            return format!("[match {by} {value:?}]");
+            return match_name(by, value);
         }
         let class = props.get(iri).and_then(|ps| {
             ps.iter().find_map(|(p, o)| match o {
@@ -288,12 +432,16 @@ fn read_doc(graph: &str, quads: &[Quad], ignore: &BTreeSet<&str>) -> Doc {
         }
     };
     for q in quads.iter().filter(|q| !structural(q)) {
-        // The shape sees everything the mapping produced; `ignore` is for the comparison.
-        doc.triples.push(Triple::new(
-            q.subject.clone(),
-            q.predicate.clone(),
-            q.object.clone(),
-        ));
+        // The shape sees everything the mapping produced that it reads (a type, or a path
+        // it constrains); `ignore` is for the comparison.
+        let p = q.predicate.as_str();
+        if shaped.is_some_and(|read| p == RDF_TYPE || read.contains(p)) {
+            doc.triples.push(Triple::new(
+                q.subject.clone(),
+                q.predicate.clone(),
+                q.object.clone(),
+            ));
+        }
         if ignore.contains(q.predicate.as_str()) {
             continue;
         }
@@ -318,6 +466,12 @@ fn read_doc(graph: &str, quads: &[Quad], ignore: &BTreeSet<&str>) -> Doc {
         }
     }
     doc
+}
+
+/// What a citation match is called in a report: what it IS, `[match decision "0007"]`, so
+/// every match of one citation in a document is one name.
+fn match_name(by: &str, value: &str) -> String {
+    format!("[match {by} {value:?}]")
 }
 
 /// `a - b` for sorted multisets.
@@ -355,26 +509,22 @@ pub(crate) fn compare(
     ignore: &[String],
 ) -> Result<Report, String> {
     let ignore: BTreeSet<&str> = ignore.iter().map(String::as_str).collect();
-    let now: BTreeMap<String, Doc> = parse(current, "the current lift")?
-        .iter()
-        .map(|(g, qs)| (g.clone(), read_doc(g, qs, &ignore)))
-        .collect();
-    let then: Option<BTreeMap<String, Doc>> = match baseline {
+    let now = Snapshot::index(current, "the current lift")?;
+    let then = match baseline {
         None => None,
-        Some(bytes) => Some(
-            parse(bytes, "the baseline")?
-                .iter()
-                .map(|(g, qs)| (g.clone(), read_doc(g, qs, &ignore)))
-                .collect(),
-        ),
+        Some(bytes) => Some(Snapshot::index(bytes, "the baseline")?),
     };
 
     let mut report = Report::new("corpus");
     report.line(
         "documents",
         match &then {
-            Some(t) => format!("{} now, {} at the baseline", now.len(), t.len()),
-            None => format!("{} now, no baseline to compare with", now.len()),
+            Some(t) => format!(
+                "{} now, {} at the baseline",
+                now.graphs.len(),
+                t.graphs.len()
+            ),
+            None => format!("{} now, no baseline to compare with", now.graphs.len()),
         },
     );
     if !ignore.is_empty() {
@@ -389,108 +539,85 @@ pub(crate) fn compare(
     }
     let out = &mut report.findings;
 
-    for (graph, doc) in &now {
-        let before = then.as_ref().and_then(|t| t.get(graph));
-        let at = |f: Finding| f.about(graph, &doc.path);
-        if let Some(e) = &doc.lift_error {
-            let also = before.is_some_and(|b| b.lift_error.is_some());
-            out.push(at(Finding::new(
-                if also {
-                    Severity::Warning
-                } else {
-                    Severity::Error
-                },
-                "document-unreadable",
-                format!(
-                    "the lift cannot read this document{}: {e}",
-                    if also { " (nor at the baseline)" } else { "" }
-                ),
-            )));
-            // Nothing else about it can be compared.
-            continue;
-        }
-        if let Some(e) = &doc.frontmatter_error {
-            if before.is_none_or(|b| b.frontmatter_error.is_none()) {
-                out.push(at(Finding::new(
-                    Severity::Error,
-                    "frontmatter-unreadable",
-                    format!("the frontmatter no longer parses as YAML: {e}"),
-                )));
-            }
-        }
-        if let Some(expects) = expects {
-            for key in &doc.keys {
-                if expects.knows_key(key) {
-                    continue;
-                }
-                let is_new = before.is_some_and(|b| !b.keys.contains(key));
-                out.push(at(if is_new {
-                    Finding::new(
-                        Severity::Warning,
-                        "key-unknown",
-                        format!(
-                            "frontmatter key `{key}` is new since the baseline, and the mapping \
-                             does not read it"
-                        ),
-                    )
-                } else {
-                    Finding::new(
-                        Severity::Info,
-                        "key-unknown",
-                        format!("frontmatter key `{key}` is not read by the mapping"),
-                    )
-                }));
-            }
-        }
-        let Some(before) = before else {
-            if then.is_some() {
-                out.push(at(Finding::new(
-                    Severity::Info,
-                    "document-new",
-                    "a document the baseline does not have",
-                )));
-            }
-            continue;
+    // What the shape reads, gathered across the corpus: a record can take its fields from
+    // more than one document, so the shape is checked on the union, not per document.
+    let shaped: Option<BTreeSet<&str>> = shapes.map(Shapes::declared_predicates);
+    let (mut shaped_now, mut shaped_then) = (Vec::new(), Vec::new());
+    // A focus node's first document by path, where its violation is filed.
+    let mut homes: BTreeMap<String, (String, String)> = BTreeMap::new();
+
+    // Both indexes are sorted by graph: walk them together, one document at a time.
+    let none: &[(String, Vec<usize>)] = &[];
+    let then_graphs = then.as_ref().map_or(none, |t| t.graphs.as_slice());
+    let (mut i, mut j) = (0, 0);
+    while i < now.graphs.len() || j < then_graphs.len() {
+        let order = match (now.graphs.get(i), then_graphs.get(j)) {
+            (Some((a, _)), Some((b, _))) => a.cmp(b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            _ => std::cmp::Ordering::Greater,
         };
-        if let Some(expects) = expects {
-            for key in before.keys.difference(&doc.keys) {
-                if expects.knows_key(key) {
-                    out.push(at(Finding::new(
-                        Severity::Warning,
-                        "key-gone",
-                        format!("frontmatter key `{key}`, which the mapping reads, is gone"),
-                    )));
+        let read = |snapshot: &Snapshot<'_>, k: usize| -> Result<Doc, String> {
+            let graph = &snapshot.graphs[k].0;
+            Ok(read_doc(
+                graph,
+                &snapshot.document(k)?,
+                &ignore,
+                shaped.as_ref(),
+            ))
+        };
+        let doc = match order {
+            std::cmp::Ordering::Greater => None,
+            _ => Some(read(&now, i)?),
+        };
+        let before = match (order, &then) {
+            (std::cmp::Ordering::Less, _) | (_, None) => None,
+            (_, Some(t)) => Some(read(t, j)?),
+        };
+        match &doc {
+            Some(doc) => {
+                document(doc, before.as_ref(), then.is_some(), expects, out);
+                for t in &doc.triples {
+                    if t.predicate.as_str() != RDF_TYPE {
+                        continue;
+                    }
+                    if let NamedOrBlankNode::NamedNode(n) = &t.subject {
+                        let here = || (doc.path.clone(), doc.graph.clone());
+                        match homes.get_mut(n.as_str()) {
+                            Some(home) if doc.path < home.0 => *home = here(),
+                            Some(_) => {}
+                            None => {
+                                homes.insert(n.as_str().to_string(), here());
+                            }
+                        }
+                    }
                 }
+                shaped_now.extend(doc.triples.iter().cloned());
+                i += 1;
             }
-            headings(expects, before, doc, &mut |f| out.push(at(f)));
-        }
-        citations(before, doc, &mut |f| out.push(at(f)));
-        records(before, doc, &mut |f| out.push(at(f)));
-    }
-    if let Some(then) = &then {
-        for (graph, doc) in then {
-            if !now.contains_key(graph) {
+            None => {
+                let gone = before
+                    .as_ref()
+                    .expect("a document on one side or the other");
                 out.push(
                     Finding::new(
                         Severity::Warning,
                         "document-gone",
                         "a document the baseline has is not in the corpus now",
                     )
-                    .about(graph, &doc.path),
+                    .about(&gone.graph, &gone.path),
                 );
             }
+        }
+        if let Some(before) = before {
+            shaped_then.extend(before.triples);
+            j += 1;
         }
     }
 
     if let Some(shapes) = shapes {
-        let union = |docs: &BTreeMap<String, Doc>| -> Vec<Triple> {
-            docs.values()
-                .flat_map(|d| d.triples.iter().cloned())
-                .collect()
-        };
-        let found = crate::shape::validate(shapes, &union(&now));
+        let found = crate::shape::validate(shapes, &shaped_now);
         let known: BTreeSet<String> = match &then {
-            Some(t) => crate::shape::validate(shapes, &union(t))
+            Some(_) => crate::shape::validate(shapes, &shaped_then)
                 .into_iter()
                 .map(|v| v.message)
                 .collect(),
@@ -498,13 +625,6 @@ pub(crate) fn compare(
         };
         for v in found {
             // Filed under the first document (by path) that types the focus node.
-            let home = now.values().filter(|d| {
-                d.triples.iter().any(|t| {
-                    t.predicate.as_str() == RDF_TYPE
-                        && matches!(&t.subject, NamedOrBlankNode::NamedNode(n) if n.as_str() == v.focus)
-                })
-            });
-            let home = home.min_by(|a, b| a.path.cmp(&b.path));
             let f = if known.contains(&v.message) {
                 Finding::new(
                     Severity::Warning,
@@ -514,14 +634,99 @@ pub(crate) fn compare(
             } else {
                 Finding::new(Severity::Error, "shape-violation", v.message)
             };
-            out.push(match home {
-                Some(d) => f.about(&d.graph, &d.path),
+            out.push(match homes.get(&v.focus) {
+                Some((path, graph)) => f.about(graph, path),
                 None => f,
             });
         }
     }
     report.sort();
     Ok(report)
+}
+
+/// Everything about one document now, against the same document at the baseline.
+fn document(
+    doc: &Doc,
+    before: Option<&Doc>,
+    has_baseline: bool,
+    expects: Option<&Expectations>,
+    out: &mut Vec<Finding>,
+) {
+    let at = |f: Finding| f.about(&doc.graph, &doc.path);
+    if let Some(e) = &doc.lift_error {
+        let also = before.is_some_and(|b| b.lift_error.is_some());
+        out.push(at(Finding::new(
+            if also {
+                Severity::Warning
+            } else {
+                Severity::Error
+            },
+            "document-unreadable",
+            format!(
+                "the lift cannot read this document{}: {e}",
+                if also { " (nor at the baseline)" } else { "" }
+            ),
+        )));
+        // Nothing else about it can be compared.
+        return;
+    }
+    if let Some(e) = &doc.frontmatter_error {
+        if before.is_none_or(|b| b.frontmatter_error.is_none()) {
+            out.push(at(Finding::new(
+                Severity::Error,
+                "frontmatter-unreadable",
+                format!("the frontmatter no longer parses as YAML: {e}"),
+            )));
+        }
+    }
+    if let Some(expects) = expects {
+        for key in &doc.keys {
+            if expects.knows_key(key) {
+                continue;
+            }
+            let is_new = before.is_some_and(|b| !b.keys.contains(key));
+            out.push(at(if is_new {
+                Finding::new(
+                    Severity::Warning,
+                    "key-unknown",
+                    format!(
+                        "frontmatter key `{key}` is new since the baseline, and the mapping \
+                         does not read it"
+                    ),
+                )
+            } else {
+                Finding::new(
+                    Severity::Info,
+                    "key-unknown",
+                    format!("frontmatter key `{key}` is not read by the mapping"),
+                )
+            }));
+        }
+    }
+    let Some(before) = before else {
+        if has_baseline {
+            out.push(at(Finding::new(
+                Severity::Info,
+                "document-new",
+                "a document the baseline does not have",
+            )));
+        }
+        return;
+    };
+    if let Some(expects) = expects {
+        for key in before.keys.difference(&doc.keys) {
+            if expects.knows_key(key) {
+                out.push(at(Finding::new(
+                    Severity::Warning,
+                    "key-gone",
+                    format!("frontmatter key `{key}`, which the mapping reads, is gone"),
+                )));
+            }
+        }
+        headings(expects, before, doc, &mut |f| out.push(at(f)));
+    }
+    let fewer = citations(before, doc, &mut |f| out.push(at(f)));
+    records(before, doc, &fewer, &mut |f| out.push(at(f)));
 }
 
 fn headings(expects: &Expectations, before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) {
@@ -585,7 +790,10 @@ fn headings(expects: &Expectations, before: &Doc, now: &Doc, push: &mut dyn FnMu
     }
 }
 
-fn citations(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) {
+/// Citations recognized fewer or more times than at the baseline. Answers the names of the
+/// matches recognized fewer times, whose loss this has reported.
+fn citations(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) -> BTreeSet<String> {
+    let mut fewer = BTreeSet::new();
     let keys: BTreeSet<&(String, String)> =
         before.matches.keys().chain(now.matches.keys()).collect();
     for key in keys {
@@ -594,19 +802,22 @@ fn citations(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) {
         let (name, value) = key;
         if b.len() > n.len() {
             let (line, text) = &b[0];
-            let times = if b.len() - n.len() > 1 {
-                format!(" ({} fewer times)", b.len() - n.len())
+            let what = if n.is_empty() {
+                "is no longer recognized"
             } else {
-                String::new()
+                "is recognized fewer times"
             };
             push(Finding::new(
                 Severity::Error,
                 "citation-lost",
                 format!(
-                    "citation `{name}` {value:?} is no longer recognized{times}; at the \
-                     baseline it read {text:?} on line {line}"
+                    "citation `{name}` {value:?} {what} ({} at the baseline, {} now); at the \
+                     baseline it read {text:?} on line {line}",
+                    b.len(),
+                    n.len()
                 ),
             ));
+            fewer.insert(match_name(name, value));
         } else if n.len() > b.len() {
             let (line, text) = &n[0];
             push(Finding::new(
@@ -616,12 +827,19 @@ fn citations(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) {
             ));
         }
     }
+    fewer
 }
 
-fn records(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) {
+/// Records and their fields. A citation match recognized fewer times (`fewer`) is one
+/// finding, the citation's: every match of a citation is one subject by name, so each one
+/// lost takes a copy of every field the mapping wrote on it, and reporting those again as
+/// lost, or the record as lost, restates that finding once per field.
+fn records(before: &Doc, now: &Doc, fewer: &BTreeSet<String>, push: &mut dyn FnMut(Finding)) {
     let subjects: BTreeSet<&String> = before.produced.keys().chain(now.produced.keys()).collect();
     for s in subjects {
+        let counted = fewer.contains(s);
         match (before.produced.get(s), now.produced.get(s)) {
+            (Some(_), None) if counted => {}
             (Some(b), None) => push(Finding::new(
                 Severity::Error,
                 "record-lost",
@@ -657,7 +875,7 @@ fn records(before: &Doc, now: &Doc, push: &mut dyn FnMut(Finding)) {
                         ));
                         continue;
                     }
-                    for old in lost {
+                    for old in lost.into_iter().filter(|_| !counted) {
                         push(Finding::new(
                             Severity::Error,
                             "field-lost",

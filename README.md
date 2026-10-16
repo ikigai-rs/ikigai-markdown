@@ -213,7 +213,9 @@ request is refused with the bound's name. It is never answered for part of the c
 `MAX_DOCUMENTS` (10,000), `MAX_DOCUMENT_BYTES` (4 MiB), `MAX_CORPUS_BYTES` (64 MiB of
 documents), `MAX_SNAPSHOT_BYTES` (256 MiB, for the snapshot taken and for a baseline), and
 the caller's time budget, the same one a lift runs under, checked before each document.
-For a corpus larger than these, lint it in parts.
+For a corpus larger than these, lint it in parts. The corpus check reads each snapshot one
+document at a time, so beyond the snapshots' own bytes it holds the largest document, plus,
+when the mapping states a shape, the triples that shape reads.
 
 From a terminal, `examples/lint.rs` wraps all four over files on disk:
 
