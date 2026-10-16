@@ -133,15 +133,50 @@ impl Mapping {
 }
 
 /// The mapping's Turtle read into its profile and its constructs' text, unchecked.
+/// The first problem [`read_raw`] found, if any, is the refusal.
 fn read(turtle: &str, base: &str) -> Result<(Profile, Vec<String>), String> {
+    let raw = read_raw(turtle, base)?;
+    if let Some(first) = raw.problems.into_iter().next() {
+        return Err(first);
+    }
+    Ok((raw.profile, raw.constructs))
+}
+
+/// A mapping read as far as it CAN be read: what the lift would refuse is collected in
+/// [`RawMapping::problems`], in the order the strict reader meets it, instead of stopping
+/// at the first. The linter reports every one; the lift refuses on the first.
+#[derive(Debug)]
+pub(crate) struct RawMapping {
+    /// Every triple of the mapping's Turtle, for anything else it states (its shapes).
+    pub triples: Vec<Triple>,
+    /// The one subject typed `md:Mapping`.
+    pub subject: NamedOrBlankNode,
+    /// The profile entries that compiled, sorted as the lift sorts them.
+    pub profile: Profile,
+    /// The constructs' text, in the file's order.
+    pub constructs: Vec<String>,
+    /// What the lift would refuse, one message each.
+    pub problems: Vec<String>,
+    /// The Turtle's `@prefix` declarations, (prefix, namespace), for display.
+    pub prefixes: Vec<(String, String)>,
+}
+
+/// Read `turtle` leniently. An `Err` is a mapping with nothing to read: Turtle that does
+/// not parse, or no single `md:Mapping` subject.
+pub(crate) fn read_raw(turtle: &str, base: &str) -> Result<RawMapping, String> {
     let parser = RdfParser::from_format(RdfFormat::Turtle)
         .with_base_iri(base)
         .map_err(|e| format!("mapping base IRI `{base}`: {e}"))?;
     let mut triples: Vec<Triple> = Vec::new();
-    for quad in parser.for_slice(turtle.as_bytes()) {
+    let mut quads = parser.for_slice(turtle.as_bytes());
+    for quad in &mut quads {
         let quad = quad.map_err(|e| format!("mapping is not valid Turtle: {e}"))?;
         triples.push(Triple::new(quad.subject, quad.predicate, quad.object));
     }
+    let prefixes = quads
+        .prefixes()
+        .map(|(p, ns)| (p.to_string(), ns.to_string()))
+        .collect();
 
     let mapping_class = Term::from(md("Mapping"));
     let subjects: Vec<&NamedOrBlankNode> = triples
@@ -184,23 +219,36 @@ fn read(turtle: &str, base: &str) -> Result<(Profile, Vec<String>), String> {
         }
     };
 
+    let mut problems = Vec::new();
     let mut profile = Profile::default();
     for t in objects(&subject, "split") {
-        let s = node(t, "split")?;
-        let key = literal(&s, "key")?.ok_or("an md:split has no md:key")?;
-        let delimiter = literal(&s, "delimiter")?.unwrap_or_else(|| ",".to_string());
-        let delimiter = Regex::new(&delimiter)
-            .map_err(|e| format!("md:split `{key}`: delimiter is not a regex: {e}"))?;
-        profile.splits.push(Split { key, delimiter });
+        let split = (|| {
+            let s = node(t, "split")?;
+            let key = literal(&s, "key")?.ok_or("an md:split has no md:key")?;
+            let delimiter = literal(&s, "delimiter")?.unwrap_or_else(|| ",".to_string());
+            let delimiter = Regex::new(&delimiter)
+                .map_err(|e| format!("md:split `{key}`: delimiter is not a regex: {e}"))?;
+            Ok::<_, String>(Split { key, delimiter })
+        })();
+        match split {
+            Ok(split) => profile.splits.push(split),
+            Err(problem) => problems.push(problem),
+        }
     }
     for t in objects(&subject, "citation") {
-        let s = node(t, "citation")?;
-        let name = literal(&s, "name")?.ok_or("an md:citation has no md:name")?;
-        let pattern = literal(&s, "pattern")?
-            .ok_or_else(|| format!("md:citation `{name}` has no md:pattern"))?;
-        let pattern = Regex::new(&pattern)
-            .map_err(|e| format!("md:citation `{name}`: pattern is not a regex: {e}"))?;
-        profile.citations.push(Citation { name, pattern });
+        let citation = (|| {
+            let s = node(t, "citation")?;
+            let name = literal(&s, "name")?.ok_or("an md:citation has no md:name")?;
+            let pattern = literal(&s, "pattern")?
+                .ok_or_else(|| format!("md:citation `{name}` has no md:pattern"))?;
+            let pattern = Regex::new(&pattern)
+                .map_err(|e| format!("md:citation `{name}`: pattern is not a regex: {e}"))?;
+            Ok::<_, String>(Citation { name, pattern })
+        })();
+        match citation {
+            Ok(citation) => profile.citations.push(citation),
+            Err(problem) => problems.push(problem),
+        }
     }
     // Parse order is the file's order; sort so the lift's node numbering does
     // not depend on how the author arranged the Turtle.
@@ -209,10 +257,17 @@ fn read(turtle: &str, base: &str) -> Result<(Profile, Vec<String>), String> {
 
     let mut constructs = Vec::new();
     for t in objects(&subject, "construct") {
-        let Term::Literal(l) = t else {
-            return Err("md:construct must be a literal holding a query".to_string());
-        };
-        constructs.push(l.value().to_string());
+        match t {
+            Term::Literal(l) => constructs.push(l.value().to_string()),
+            _ => problems.push("md:construct must be a literal holding a query".to_string()),
+        }
     }
-    Ok((profile, constructs))
+    Ok(RawMapping {
+        triples,
+        subject,
+        profile,
+        constructs,
+        problems,
+        prefixes,
+    })
 }

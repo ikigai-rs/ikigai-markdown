@@ -107,3 +107,41 @@ md:pattern a rdf:Property ; rdfs:label "pattern" ; rdfs:domain md:Citation ; rdf
     rdfs:comment "A regex; the named group v, else group 1, is each match's value." .
 md:construct a rdf:Property ; rdfs:label "construct" ; rdfs:domain md:Mapping ; rdfs:range xsd:string ;
     rdfs:comment "A SPARQL CONSTRUCT over one document's structural graph; must not emit blank nodes." .
+md:shape a rdf:Property ; rdfs:label "shape" ; rdfs:domain md:Mapping ;
+    rdfs:comment "A SHACL node shape for what the mapping's constructs write; the linter checks output against it." .
+
+# --- the linter ----------------------------------------------------------------------
+
+md:liftError a rdf:Property ; rdfs:label "lift error" ; rdfs:domain md:Document ; rdfs:range xsd:string ;
+    rdfs:comment "In a snapshot, why the lift could not read a listed document at all." .
+md:LintReport a rdfs:Class ; rdfs:label "Lint report" ;
+    rdfs:comment "What one check of a mapping, or of a corpus under one, found." .
+md:Finding a rdfs:Class ; rdfs:label "Finding" ;
+    rdfs:comment "One thing a check found, with a severity and a stable code." .
+md:Expectation a rdfs:Class ; rdfs:label "Expectation" ;
+    rdfs:comment "One literal a mapping's constructs compare a document's text with: a key, a heading, a path pattern." .
+md:check a rdf:Property ; rdfs:label "check" ; rdfs:domain md:LintReport ; rdfs:range xsd:string ;
+    rdfs:comment "Which check: mapping, corpus or expects." .
+md:errors a rdf:Property ; rdfs:label "errors" ; rdfs:domain md:LintReport ; rdfs:range xsd:integer .
+md:warnings a rdf:Property ; rdfs:label "warnings" ; rdfs:domain md:LintReport ; rdfs:range xsd:integer .
+md:notes a rdf:Property ; rdfs:label "notes" ; rdfs:domain md:LintReport ; rdfs:range xsd:integer .
+md:finding a rdf:Property ; rdfs:label "finding" ; rdfs:domain md:LintReport ; rdfs:range md:Finding .
+md:severity a rdf:Property ; rdfs:label "severity" ; rdfs:domain md:Finding ; rdfs:range xsd:string ;
+    rdfs:comment "error, warning or info." .
+md:code a rdf:Property ; rdfs:label "code" ; rdfs:domain md:Finding ; rdfs:range xsd:string ;
+    rdfs:comment "A stable kebab-case name for the kind of finding, e.g. heading-vanished." .
+md:message a rdf:Property ; rdfs:label "message" ; rdfs:domain md:Finding ; rdfs:range xsd:string .
+md:documentPath a rdf:Property ; rdfs:label "document path" ; rdfs:domain md:Finding ; rdfs:range xsd:string ;
+    rdfs:comment "The md:path of the document a finding is about, for display." .
+md:mappingRef a rdf:Property ; rdfs:label "mapping reference" ; rdfs:domain md:LintReport ; rdfs:range xsd:string ;
+    rdfs:comment "The mapping a report is about, as it was named." .
+md:expects a rdf:Property ; rdfs:label "expects" ; rdfs:domain md:LintReport ;
+    rdfs:comment "Something the mapping depends on: an md:Expectation, md:Split or md:Citation." .
+md:kind a rdf:Property ; rdfs:label "kind" ; rdfs:domain md:Expectation ; rdfs:range xsd:string ;
+    rdfs:comment "What the literal is compared with: path, frontmatter-key, heading, heading-level, citation-name or value." .
+md:how a rdf:Property ; rdfs:label "how" ; rdfs:domain md:Expectation ; rdfs:range xsd:string ;
+    rdfs:comment "equals, equals-ignoring-case, matches, contains, starts-with or ends-with." .
+md:on a rdf:Property ; rdfs:label "on" ; rdfs:domain md:Expectation ; rdfs:range xsd:string ;
+    rdfs:comment "For a value, the structural value it is compared with, e.g. md:raw of md:ListItem." .
+md:inConstruct a rdf:Property ; rdfs:label "in construct" ; rdfs:domain md:Expectation ; rdfs:range xsd:integer ;
+    rdfs:comment "The 1-based position of a construct that depends on it." .

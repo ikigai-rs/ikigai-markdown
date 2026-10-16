@@ -24,7 +24,10 @@
 # Every regex below is written without backslashes ([0-9], not \d): a backslash inside
 # a SPARQL string inside a Turtle string has to be written four times over.
 
-@prefix md: <https://ikigai-rs.dev/ns/md#> .
+@prefix md:  <https://ikigai-rs.dev/ns/md#> .
+@prefix dr:  <http://example.org/decisions#> .
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
 # The subject is an ABSOLUTE IRI, not <#mapping>, and the profile entries below are
 # named rather than the blank nodes the short form allows. A mapping installed in the
@@ -42,6 +45,12 @@
     # Every "DR-0007" anywhere in the source becomes an md:Match whose md:value is
     # the number (the named group `v`).
     md:citation <urn:example:mapping:citation:decision> ;
+
+    # --- the shape -----------------------------------------------------------------
+    # What the constructs below WRITE, stated so the linter can check it: every
+    # predicate and class a construct writes is declared here, and the corpus check
+    # reports every decision that breaks it (urn:markdown:lint:mapping, :corpus).
+    md:shape <urn:example:mapping:shape:decision> ;
 
     # --- the constructs ------------------------------------------------------------
     # Each runs on its own over one document's structural graph; the domain graph is
@@ -128,3 +137,30 @@ WHERE {
 <urn:example:mapping:split:related> md:key "related" ; md:delimiter "," .
 
 <urn:example:mapping:citation:decision> md:name "decision" ; md:pattern "DR-(?P<v>[0-9]{4})" .
+
+# The shape of a decision. The linter checks sh:targetClass and, on each property,
+# sh:minCount, sh:maxCount, sh:datatype, sh:nodeKind, sh:class and sh:in; it reports
+# anything else as not checked. (sh:in takes an RDF list, which Turtle writes with blank
+# nodes, so this skolemized file does without it.)
+<urn:example:mapping:shape:decision> a sh:NodeShape ;
+    sh:targetClass dr:Decision ;
+    sh:property <urn:example:mapping:shape:decision:number> ,
+                <urn:example:mapping:shape:decision:document> ,
+                <urn:example:mapping:shape:decision:title> ,
+                <urn:example:mapping:shape:decision:status> ,
+                <urn:example:mapping:shape:decision:date> ,
+                <urn:example:mapping:shape:decision:related> ,
+                <urn:example:mapping:shape:decision:cites> .
+
+<urn:example:mapping:shape:decision:number> sh:path dr:number ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:example:mapping:shape:decision:document> sh:path dr:document ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI .
+<urn:example:mapping:shape:decision:title> sh:path dr:title ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:example:mapping:shape:decision:status> sh:path dr:status ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:example:mapping:shape:decision:date> sh:path dr:date ;
+    sh:maxCount 1 ; sh:datatype xsd:date .
+<urn:example:mapping:shape:decision:related> sh:path dr:related ; sh:nodeKind sh:IRI .
+<urn:example:mapping:shape:decision:cites> sh:path dr:cites ; sh:nodeKind sh:IRI .

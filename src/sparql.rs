@@ -144,6 +144,22 @@ impl<'a> Allowance<'a> {
         }
     }
 
+    /// Refuse with a typed timeout when nothing of the allowance is left: what a loop over
+    /// many lifts checks between them. Never refuses on wasm, where nothing is timed.
+    pub(crate) fn check_left(&self, what: &str) -> Result<()> {
+        #[cfg(not(target_family = "wasm"))]
+        if std::time::Instant::now() >= self.until {
+            return Err(Error::Timeout(format!(
+                "{what} ran past the caller's time budget of {} ms and was stopped. The budget \
+                 is set by the host, and a `urn:cap:store:budget:<ms>` grant raises it. Lint \
+                 fewer documents at a time, or ask the host for a larger budget",
+                self.total.as_millis()
+            )));
+        }
+        let _ = what;
+        Ok(())
+    }
+
     /// A timeout in this lift's words: the store's names a `budget=` argument the lift does
     /// not take, and the milliseconds that were LEFT rather than the caller's budget.
     fn explain(&self, e: Error, what: &str, left: Option<&str>) -> Error {
@@ -226,6 +242,27 @@ pub(crate) fn construct(
         .budget
         .run(text, allowance.capability, requested.as_deref(), work)
         .map_err(|e| allowance.explain(e, what, requested.as_deref()))
+}
+
+/// Parse `text` and put it through every bound and refusal [`construct`] applies BEFORE it
+/// evaluates anything: the text bound, the parse, the algebra bound, and `SERVICE`. What the
+/// linter reads a construct with, so it says what the lift would say without running it.
+///
+/// ⚠ The parser is recursive: call this inside [`limits::on_sparql_stack`], never on a
+/// worker's own stack. The text bound is checked first all the same, so a caller that
+/// forgets is refused before the parse on anything the bound refuses.
+pub(crate) fn parse_static(text: &str, what: &str) -> Result<spargebra::Query> {
+    let bounded = |e: Error| match e {
+        Error::InvalidArgument { detail, .. } => refuse(format!("{what}: {detail}")),
+        other => other,
+    };
+    limits::check_sparql(text, ARG).map_err(bounded)?;
+    let query = spargebra::SparqlParser::new()
+        .parse_query(text)
+        .map_err(|e| refuse(format!("{what} is not valid SPARQL: {e}")))?;
+    budget::check_query(&query, ARG).map_err(bounded)?;
+    service::refuse_service_with(&query, ARG, Some(SERVICE_REMEDY)).map_err(bounded)?;
+    Ok(query)
 }
 
 /// The detail of a refusal, for the public API that predates typed errors and returns
