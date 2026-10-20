@@ -87,4 +87,15 @@ fn conforms() {
     eprintln!("{report}");
     assert!(report.is_clean(), "{report}");
     assert_eq!(report.endpoints, 7, "{report}");
+    // FAILURES is off unless a suite opts in (`check_failures()`, the next wave); it is the
+    // only check allowed to be skipped.
+    assert_eq!(
+        report
+            .checks
+            .skipped()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>(),
+        ["FAILURES"],
+        "every check but FAILURES runs: {report}"
+    );
 }
