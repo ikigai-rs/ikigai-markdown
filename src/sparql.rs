@@ -59,15 +59,19 @@
 //!    when the mapping is checked and when it is applied, draws on that one allowance, so a
 //!    mapping of many slow constructs is answered at the budget too, not at a multiple of it.
 //!    [`crate::Mapping::parse`] and [`crate::apply`], which have no caller, run under a
-//!    process-wide default and its base (5 s). On wasm there are no threads, and so no
-//!    deadline either: the evaluation runs inline, as the store's does there.
+//!    process-wide default and its base (5 s). On wasm there are no threads: the evaluation
+//!    runs inline, as the store's does there, and cannot be stopped partway. But the
+//!    allowance is still kept, on the kernel's injected clock (`inv.now()`), since
+//!    `Instant::now` panics there: a construct or a
+//!    snapshot's next document is refused once it is spent (ledger #2197). A host that
+//!    injects no clock gets no deadline.
 //!
 //! Every refusal of the text is a typed [`Error::InvalidArgument`] on `mapping`, the argument
 //! that carried it. Running out of time is a [`Error::Timeout`], and a lift turned away while
 //! too many evaluations are overdue an [`Error::Unavailable`]: both are transient, and neither
 //! says the mapping is wrong.
 
-use ikigai_core::{Capability, Error, Result};
+use ikigai_core::{Capability, Error, Result, Time};
 use ikigai_store::{budget, limits, service, EvaluationBudget, TimeBudget};
 use oxigraph::model::Triple;
 use oxigraph::sparql::QueryResults;
@@ -91,6 +95,62 @@ pub(crate) fn refuse(detail: impl Into<String>) -> Error {
     }
 }
 
+/// Where an [`Allowance`] reads the time (ledger #2197).
+#[derive(Clone, Copy)]
+pub(crate) enum Clock<'a> {
+    /// This process's monotonic clock. Native only: on wasm `Instant::now` panics.
+    #[cfg(not(target_family = "wasm"))]
+    Monotonic,
+    /// The invocation's, `inv.now()`: the kernel's injected [`ikigai_core::Clock`], which is
+    /// the only clock a wasm host has (a browser's is `Date.now()`-backed). When it answers
+    /// `None`, nothing is timed. Native builds construct it only in tests.
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    Invocation(&'a (dyn Fn() -> Option<Time> + Sync + 'a)),
+    /// None: nothing is timed.
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    Untimed,
+}
+
+impl<'a> Clock<'a> {
+    /// The clock of a lift with no invocation behind it ([`crate::Mapping::parse`],
+    /// [`crate::apply`]): the monotonic one natively, and on wasm none.
+    pub(crate) fn host() -> Clock<'a> {
+        #[cfg(target_family = "wasm")]
+        {
+            Clock::Untimed
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            Clock::Monotonic
+        }
+    }
+
+    /// The clock of an invocation, `now` being its `inv.now()`: natively the monotonic one,
+    /// as the store's doors time an evaluation, and on wasm the kernel's.
+    pub(crate) fn of(now: &'a (dyn Fn() -> Option<Time> + Sync + 'a)) -> Clock<'a> {
+        #[cfg(target_family = "wasm")]
+        {
+            Clock::Invocation(now)
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = now;
+            Clock::Monotonic
+        }
+    }
+}
+
+/// When an [`Allowance`] runs out, on its [`Clock`].
+enum Until<'a> {
+    #[cfg(not(target_family = "wasm"))]
+    Instant(std::time::Instant),
+    Kernel {
+        now: &'a (dyn Fn() -> Option<Time> + Sync + 'a),
+        at: u64,
+    },
+    Never,
+}
+
 /// The time ONE lift's constructs may take, all of them together: the caller's budget, and
 /// when it started being spent. Every [`construct`] of the lift draws on it.
 pub(crate) struct Allowance<'a> {
@@ -98,22 +158,55 @@ pub(crate) struct Allowance<'a> {
     capability: &'a Capability,
     /// The caller's whole budget, for the refusal's wording.
     total: std::time::Duration,
-    /// When it runs out. Not on wasm, where `Instant::now` panics and nothing is timed.
-    #[cfg(not(target_family = "wasm"))]
-    until: std::time::Instant,
+    /// When it runs out, read on the allowance's [`Clock`].
+    until: Until<'a>,
 }
 
 impl<'a> Allowance<'a> {
-    /// The allowance of a caller holding `capability`, starting now: what `budget` gives that
-    /// capability, as the store's doors choose it.
-    pub(crate) fn new(budget: &'a EvaluationBudget, capability: &'a Capability) -> Allowance<'a> {
+    /// The allowance of a caller holding `capability`, starting now on `clock`: what `budget`
+    /// gives that capability, as the store's doors choose it.
+    pub(crate) fn new(
+        budget: &'a EvaluationBudget,
+        capability: &'a Capability,
+        clock: Clock<'a>,
+    ) -> Allowance<'a> {
         let total = budget.time_budget().for_capability(capability);
+        let until = match clock {
+            #[cfg(not(target_family = "wasm"))]
+            Clock::Monotonic => Until::Instant(std::time::Instant::now() + total),
+            Clock::Invocation(now) => match now() {
+                Some(t) => Until::Kernel {
+                    now,
+                    at: t
+                        .as_millis()
+                        .saturating_add(u64::try_from(total.as_millis()).unwrap_or(u64::MAX)),
+                },
+                None => Until::Never,
+            },
+            Clock::Untimed => Until::Never,
+        };
         Allowance {
             budget,
             capability,
             total,
+            until,
+        }
+    }
+
+    /// What is left, in whole milliseconds, or `None` when nothing is timed (no clock, or
+    /// the kernel's stopped answering).
+    fn left(&self) -> Option<u128> {
+        match &self.until {
             #[cfg(not(target_family = "wasm"))]
-            until: std::time::Instant::now() + total,
+            Until::Instant(until) => Some(
+                until
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_millis(),
+            ),
+            Until::Kernel { now, at } => {
+                now().map(|t| u128::from(at.saturating_sub(t.as_millis())))
+            }
+            Until::Never => None,
         }
     }
 
@@ -121,34 +214,22 @@ impl<'a> Allowance<'a> {
     /// [`EvaluationBudget::run`], which can only lower what the capability gets. A timeout
     /// when nothing is.
     fn remaining(&self, what: &str) -> Result<Option<String>> {
-        #[cfg(target_family = "wasm")]
-        {
-            let _ = what;
-            Ok(None)
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let left = self
-                .until
-                .saturating_duration_since(std::time::Instant::now())
-                .as_millis();
-            if left == 0 {
-                return Err(Error::Timeout(format!(
-                    "{what} was not started: this lift's constructs had already used its whole \
-                     time budget of {} ms (ledger #1344). The budget is set by the host. Narrow \
-                     the constructs, or ask the host for a larger budget",
-                    self.total.as_millis()
-                )));
-            }
-            Ok(Some(left.to_string()))
+        match self.left() {
+            None => Ok(None),
+            Some(0) => Err(Error::Timeout(format!(
+                "{what} was not started: this lift's constructs had already used its whole \
+                 time budget of {} ms (ledger #1344). The budget is set by the host. Narrow \
+                 the constructs, or ask the host for a larger budget",
+                self.total.as_millis()
+            ))),
+            Some(left) => Ok(Some(left.to_string())),
         }
     }
 
     /// Refuse with a typed timeout when nothing of the allowance is left: what a loop over
-    /// many lifts checks between them. Never refuses on wasm, where nothing is timed.
+    /// many lifts checks between them. Never refuses when nothing is timed.
     pub(crate) fn check_left(&self, what: &str) -> Result<()> {
-        #[cfg(not(target_family = "wasm"))]
-        if std::time::Instant::now() >= self.until {
+        if self.left() == Some(0) {
             return Err(Error::Timeout(format!(
                 "{what} ran past the caller's time budget of {} ms and was stopped. The budget \
                  is set by the host, and a `urn:cap:store:budget:<ms>` grant raises it. Lint \
@@ -156,7 +237,6 @@ impl<'a> Allowance<'a> {
                 self.total.as_millis()
             )));
         }
-        let _ = what;
         Ok(())
     }
 
@@ -288,7 +368,7 @@ mod tests {
         let store = Store::new().unwrap();
 
         // Fresh, the allowance runs a construct.
-        let allowance = Allowance::new(&budget, &caller);
+        let allowance = Allowance::new(&budget, &caller, Clock::host());
         assert!(construct(ORDINARY, &store, "construct 1", &allowance)
             .unwrap()
             .is_some());
@@ -312,11 +392,84 @@ mod tests {
         let budget = EvaluationBudget::new(TimeBudget::new(std::time::Duration::from_millis(50)));
         let granted = Capability::scoped([budget::cap_budget(2_000)]);
         let root = Capability::root();
-        assert_eq!(Allowance::new(&budget, &no_grants()).total.as_millis(), 50);
-        assert_eq!(Allowance::new(&budget, &granted).total.as_millis(), 2_000);
         assert_eq!(
-            Allowance::new(&budget, &root).total,
+            Allowance::new(&budget, &no_grants(), Clock::host())
+                .total
+                .as_millis(),
+            50
+        );
+        assert_eq!(
+            Allowance::new(&budget, &granted, Clock::host())
+                .total
+                .as_millis(),
+            2_000
+        );
+        assert_eq!(
+            Allowance::new(&budget, &root, Clock::host()).total,
             budget.time_budget().ceiling()
         );
+    }
+
+    /// The kernel's clock, `inv.now()`, as a wasm lift reads it: a time a test moves.
+    struct Kernel(std::sync::atomic::AtomicU64);
+    impl Kernel {
+        fn now(&self) -> Option<Time> {
+            Some(Time::from_millis(
+                self.0.load(std::sync::atomic::Ordering::SeqCst),
+            ))
+        }
+        fn set(&self, millis: u64) {
+            self.0.store(millis, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn the_kernels_clock_runs_an_allowance_out() {
+        // What a wasm lift runs on (ledger #2197): before, an allowance there read no clock
+        // and never refused.
+        let budget = EvaluationBudget::new(TimeBudget::new(std::time::Duration::from_millis(50)));
+        let caller = no_grants();
+        let store = Store::new().unwrap();
+        let kernel = Kernel(std::sync::atomic::AtomicU64::new(1_000));
+        let now = || kernel.now();
+        let allowance = Allowance::new(&budget, &caller, Clock::Invocation(&now));
+
+        kernel.set(1_049);
+        allowance.check_left("the snapshot").unwrap();
+        assert!(construct(ORDINARY, &store, "construct 1", &allowance)
+            .unwrap()
+            .is_some());
+
+        kernel.set(1_050);
+        let Err(Error::Timeout(detail)) = allowance.check_left("the snapshot") else {
+            panic!("an allowance on the kernel's clock did not run out");
+        };
+        assert!(
+            detail.starts_with("the snapshot ran past") && detail.contains("50 ms"),
+            "{detail}"
+        );
+        let Err(Error::Timeout(detail)) = construct(ORDINARY, &store, "construct 2", &allowance)
+        else {
+            panic!("a construct past the kernel's deadline was started");
+        };
+        assert!(
+            detail.starts_with("construct 2 was not started"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn with_no_clock_nothing_is_timed() {
+        // A kernel with no clock gives an invocation no time: the honest answer is no
+        // deadline, not a refusal.
+        let budget = EvaluationBudget::new(TimeBudget::new(std::time::Duration::from_millis(1)));
+        let caller = no_grants();
+        let none = || None;
+        for clock in [Clock::Invocation(&none), Clock::Untimed] {
+            let allowance = Allowance::new(&budget, &caller, clock);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            allowance.check_left("the snapshot").unwrap();
+            assert_eq!(allowance.remaining("construct").unwrap(), None);
+        }
     }
 }

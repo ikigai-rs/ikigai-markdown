@@ -20,7 +20,11 @@ pub fn apply(
     constructs: &[String],
 ) -> Result<Vec<Quad>, String> {
     let capability = crate::sparql::no_grants();
-    let allowance = crate::sparql::Allowance::new(crate::sparql::uncalled(), &capability);
+    let allowance = crate::sparql::Allowance::new(
+        crate::sparql::uncalled(),
+        &capability,
+        crate::sparql::Clock::host(),
+    );
     apply_checked(structural, graph, constructs, &allowance).map_err(crate::sparql::detail)
 }
 

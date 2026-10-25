@@ -109,8 +109,11 @@ cut. Editing the mapping re-lifts every document under it with no rebuild.
   it the caller gets a typed `Timeout`. ⚠ oxigraph cannot stop a cross product partway,
   so such an evaluation keeps a core busy after its caller was answered; while a quarter
   of the machine's cores are held that way, a lift that needs SPARQL is refused at once
-  with a transient `Unavailable`. A host sets its own with `space_with_budget`. On wasm
-  there are no threads, and no deadline.
+  with a transient `Unavailable`. A host sets its own with `space_with_budget`, or
+  `space_under_budget` on any target. On wasm there are no threads, so a construct runs
+  inline and cannot be stopped partway; the budget is read on the kernel's injected clock
+  (`inv.now()`), and a lift or snapshot that has spent it is refused before its next
+  construct or document. A wasm host that injects no clock gets no deadline.
 - **A construct reads only the document: no `SERVICE`.** A `SERVICE` anywhere in a
   construct (inside `EXISTS` or `OPTIONAL`, `SILENT`, or with a variable name) is refused
   with an `InvalidArgument` on `mapping` before anything is evaluated, in every build. In
@@ -148,7 +151,8 @@ where a named mapping is a not-found). On wasm there is no config home and the
 endpoint is simply not bound. `space_with_budget(home, budget)` also sets the lifts'
 time budget (`ikigai_markdown::EvaluationBudget`, re-exported from `ikigai-store`): make
 one per host and pass it to every space you mount, since the cap on evaluations still
-running past their budget is counted per budget.
+running past their budget is counted per budget. `space_under_budget(budget)` is the same
+over this machine's config home, and the only way to set a budget on wasm.
 
 ## `mappings/example`: a worked mapping
 

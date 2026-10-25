@@ -96,7 +96,11 @@ impl Mapping {
     /// ```
     pub fn parse(turtle: &str, base: &str) -> Result<Mapping, String> {
         let capability = crate::sparql::no_grants();
-        let allowance = crate::sparql::Allowance::new(crate::sparql::uncalled(), &capability);
+        let allowance = crate::sparql::Allowance::new(
+            crate::sparql::uncalled(),
+            &capability,
+            crate::sparql::Clock::host(),
+        );
         Mapping::parse_checked(turtle, base, &allowance).map_err(crate::sparql::detail)
     }
 
