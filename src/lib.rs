@@ -132,13 +132,31 @@ pub const VOCABULARY: &str = include_str!("vocabulary.ttl");
 /// On wasm the named-mapping endpoint is absent rather than present-and-failing:
 /// an action in the manifold that cannot succeed is worse than one not offered.
 pub fn space() -> EndpointSpace {
+    space_under_budget(EvaluationBudget::default())
+}
+
+/// [`space`], with the lift's SPARQL running under `budget` (ledger #1344), on EVERY target:
+/// natively it is [`space_with_budget`] over this machine's config home, and on wasm, where
+/// there is no [`MappingHome`] to name, it is how a host sets a budget at all (ledger #2197).
+/// There a lift is timed on the kernel's injected clock, `inv.now()`, so a host that injects
+/// none gets no deadline.
+///
+/// ```
+/// use std::time::Duration;
+/// use ikigai_markdown::{EvaluationBudget, TimeBudget};
+///
+/// let budget = EvaluationBudget::new(TimeBudget::new(Duration::from_millis(500)));
+/// let space = ikigai_markdown::space_under_budget(budget);
+/// # let _ = space;
+/// ```
+pub fn space_under_budget(budget: EvaluationBudget) -> EndpointSpace {
     #[cfg(target_family = "wasm")]
     {
-        base_space(EvaluationBudget::default())
+        base_space(budget)
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        space_with(std::sync::Arc::new(MappingHome::ambient()))
+        space_with_budget(std::sync::Arc::new(MappingHome::ambient()), budget)
     }
 }
 
@@ -259,7 +277,10 @@ impl Endpoint for LiftEndpoint {
         // The caller's time budget, for every construct of this lift together (ledger
         // #1344). It starts once `src` and `mapping` have resolved: it bounds the SPARQL,
         // not the reading of the inputs, which their own endpoints answer for.
-        let allowance = sparql::Allowance::new(&self.budget, inv.capability);
+        // On wasm its clock is the kernel's, `inv.now()` (ledger #2197).
+        let now = || inv.now();
+        let allowance =
+            sparql::Allowance::new(&self.budget, inv.capability, sparql::Clock::of(&now));
         let mapping = match mapping_text {
             None => Mapping::default(),
             Some((turtle, base)) => Mapping::parse_checked(&turtle, &base, &allowance)?,

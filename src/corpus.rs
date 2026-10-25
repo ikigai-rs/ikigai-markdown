@@ -26,7 +26,7 @@ use ikigai_core::{
 };
 
 use crate::lint::{self, Report};
-use crate::sparql::Allowance;
+use crate::sparql::{Allowance, Clock};
 use crate::vocab::{md, RDF_TYPE};
 use oxigraph::io::{RdfFormat, RdfParser};
 use oxigraph::model::{GraphName, Literal, NamedNode, Quad, Term};
@@ -214,7 +214,8 @@ impl SnapshotEndpoint {
         mapping: Option<&str>,
     ) -> Result<Vec<u8>> {
         let list = document_list(docs)?;
-        let allowance = Allowance::new(&self.budget, inv.capability);
+        let now = || inv.now();
+        let allowance = Allowance::new(&self.budget, inv.capability, Clock::of(&now));
         let (mut read, mut produced) = (0usize, 0usize);
         let mut lines: Vec<String> = Vec::new();
         for (i, iri) in list.iter().enumerate() {
