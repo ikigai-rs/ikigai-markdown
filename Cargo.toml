@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-markdown"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Markdown as a graph for ikigai: urn:markdown:lift — one generic structural lift (frontmatter, sections, lists, links, code) plus a mapping resource (a lift profile and SPARQL CONSTRUCTs) that turns the structure into a domain model. The lifter knows no document vocabulary; the mapping carries all of it."
@@ -23,11 +23,10 @@ categories = ["parser-implementations", "text-processing"]
 http-client = ["oxigraph/http-client"]
 
 [dependencies]
-# The released kernel. 0.1.70 is the version this crate was built and tested
-# against; a lower floor has NOT been measured. The API used is old (ArgSpec
-# `class`/`one_of`/`default_value`, `Invocation::source`, `depends_on`), so the
-# real floor is probably far lower — measure before loosening this.
-ikigai-core = "0.1.70"
+# The released kernel. 0.2.0 is the streams release (ledger #2261); the old
+# "0.1.70" pin meant <0.2.0 under 0.x rules, so this is a re-pin, not a loosening.
+# Core's types are in this crate's API, hence this crate's own minor bump.
+ikigai-core = "0.2.0"
 async-trait = "0.1"
 # CommonMark with GFM tables, task lists and YAML-style metadata blocks. Default
 # features off: the `html` renderer is not used (md->html is out of scope).
@@ -57,8 +56,9 @@ oxigraph = { version = "0.5.11", default-features = false }
 # `service::refuse_service_with`, which words the refusal for a mapping rather than the store
 # (ledger #1108), in 0.2.11, and `EvaluationBudget`, the time budget on an evaluation this
 # crate runs itself rather than through a store door (ledger #1344), in 0.2.19.
-# ⚠ `"0.2.19"` is a CEILING as well as a floor — `<0.3.0`.
-ikigai-store = { version = "0.2.19", default-features = false }
+# 0.3.x is the store on core 0.2.0 (the streams release, ledger #2261); 0.3.1 is the newest.
+# ⚠ `"0.3.1"` is a CEILING as well as a floor — `<0.4.0`.
+ikigai-store = { version = "0.3.1", default-features = false }
 # The parser oxigraph itself uses, named so a construct's ALGEBRA can be measured by
 # `budget::check_query` before oxigraph plans it. Already in the graph through oxigraph,
 # which pins `=0.4.7` and converts from this type (`for_query`); the caret unifies with it.
@@ -78,17 +78,16 @@ sha2 = "0.10"
 # required by-value input, dropped, must be refused typed) and the DECLARATIONS check on
 # fixture arguments; 0.9.0 core's contract-shape checks (REQUIRED probes input groups,
 # OUTPUTS honors output_from, PIPELINE's named-only line, VALIDATE refuses a default on a
-# binding) and RECOMPUTE; 0.10.0 FAILURES, off unless a suite opts in. ⚠ A CEILING as well
-# as a floor: `<0.11.0`.
-# Its own floor, `ikigai-core = "0.1.108"`, pulls a new enough kernel into every TEST
-# build, so `[dependencies] ikigai-core` above stays at what the LIBRARY needs: the
-# library names no space and uses nothing from 0.1.89 or later.
-ikigai-conformance = "0.10.0"
+# binding) and RECOMPUTE; 0.10.0 FAILURES, off unless a suite opts in; 0.11.0 is the
+# conformance on core 0.2.0 (ledger #2261) and turns DATATYPES and FAILURES on by default.
+# ⚠ A CEILING as well as a floor: `<0.12.0`.
+ikigai-conformance = "0.11.0"
 # The REPL engine, for `tests/pipeline.rs`: whether `source urn:file:x.md |
 # urn:markdown:lift` routes is decided by the engine, which a kernel-level test
 # cannot see. 0.1.43: 0.1.23 pulls an `ikigai-resolve` that predates core's `Resolved`
-# change, and conformance 0.6.0 brings core 0.1.89 into the test build.
-ikigai-engine = "0.1.43"
+# change, and conformance 0.6.0 brings core 0.1.89 into the test build. 0.2.0 is the
+# engine on core 0.2.0 (ledger #2261).
+ikigai-engine = "0.2.0"
 # The engine reads each contract as `Meta as=application/json`; without a renderer
 # it fails open and the pipeline tests prove nothing.
 serde_json = "1"
