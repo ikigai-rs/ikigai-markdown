@@ -79,9 +79,10 @@ sha2 = "0.10"
 # fixture arguments; 0.9.0 core's contract-shape checks (REQUIRED probes input groups,
 # OUTPUTS honors output_from, PIPELINE's named-only line, VALIDATE refuses a default on a
 # binding) and RECOMPUTE; 0.10.0 FAILURES, off unless a suite opts in; 0.11.0 is the
-# conformance on core 0.2.0 (ledger #2261) and turns DATATYPES and FAILURES on by default.
-# ⚠ A CEILING as well as a floor: `<0.12.0`.
-ikigai-conformance = "0.11.0"
+# conformance on core 0.2.0 (ledger #2261) and turns DATATYPES and FAILURES on by default;
+# 0.12.0 turns BODIES and BODY-INPUTS on (ledger #2249, #2457).
+# ⚠ A CEILING as well as a floor: `<0.13.0`.
+ikigai-conformance = "0.12.0"
 # The REPL engine, for `tests/pipeline.rs`: whether `source urn:file:x.md |
 # urn:markdown:lift` routes is decided by the engine, which a kernel-level test
 # cannot see. 0.1.43: 0.1.23 pulls an `ikigai-resolve` that predates core's `Resolved`
