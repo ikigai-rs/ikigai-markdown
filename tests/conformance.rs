@@ -27,7 +27,9 @@ fn conforms() {
     scratch.install_example("example");
     let home = Arc::new(MappingHome::new(Some(scratch.path().to_path_buf())));
     // Built once and handed to both the kernel and the suite, so the space the walk
-    // covers is the one SPACE-NAME checks.
+    // covers is the one SPACE-NAME checks, and BODIES calls each endpoint's `invoke` and
+    // `invoke_body` in it directly. No argument is declared `reads_body`, so BODY-INPUTS has
+    // nothing to probe and no content store is needed.
     let space = Arc::new(ikigai_markdown::space_with(home));
     let kernel = Kernel::new(space.clone());
     let report = Suite::new()
@@ -36,6 +38,7 @@ fn conforms() {
         // built over the home it is handed; `space()` reads this machine's config
         // home from the environment while it is built (on native; the wasm build has
         // no named-mapping door and reads nothing).
+        .body_space(space.clone())
         .host_named_space("ikigai_markdown::space_with(home)", space)
         .host_named_space("ikigai_markdown::space()", ikigai_markdown::space())
         // The module DEFINES this namespace: `urn:markdown:vocabulary` serves it.
@@ -87,8 +90,11 @@ fn conforms() {
     eprintln!("{report}");
     assert!(report.is_clean(), "{report}");
     assert_eq!(report.endpoints, 7, "{report}");
-    // Since 0.11.0 every check runs by default, DATATYPES and FAILURES included: none is
-    // allowed to be skipped.
+    // A clean report says nothing about a check that could not look. BODIES without
+    // `body_space` is unprobed on every endpoint, and that is not a pass.
+    assert!(report.unprobed.is_empty(), "every check probes: {report}");
+    // Since 0.11.0 every check runs by default, DATATYPES and FAILURES included, and since
+    // 0.12.0 BODIES and BODY-INPUTS: none is allowed to be skipped.
     assert_eq!(
         report
             .checks
