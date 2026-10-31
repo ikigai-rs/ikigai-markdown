@@ -236,3 +236,9 @@ It exits 1 when a text report holds an error.
 ## Not here yet
 
 md→html, an HTML face, transreptor registration, and any write path.
+
+## Accessibility
+
+What this crate emits that people read (the linter's text reports, graphs, and error messages),
+the rules that output follows, how it is tested and how to report a barrier are in
+[ACCESSIBILITY.md](ACCESSIBILITY.md).
