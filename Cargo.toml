@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-markdown"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Markdown as a graph for ikigai: urn:markdown:lift — one generic structural lift (frontmatter, sections, lists, links, code) plus a mapping resource (a lift profile and SPARQL CONSTRUCTs) that turns the structure into a domain model. The lifter knows no document vocabulary; the mapping carries all of it."
@@ -70,6 +70,12 @@ spargebra = "0.4.7"
 oxigraph = { version = "0.5.11", default-features = false, features = ["js"] }
 
 [dev-dependencies]
+# The file module a host binds at `urn:markdown:file:{path}` over the config home's `markdown`
+# directory, so `urn:markdown:mapping:{name}` reads a mapping by request (Hypothesis H, ledger
+# #2384). A DEV-dependency only: which file module answers there is the host's choice, and
+# this crate opens no file itself. 0.3.0 is the file module on core 0.2.x.
+# ⚠ A CEILING as well as a floor: `<0.4.0`.
+ikigai-fs = "0.3.0"
 futures = "0.3"
 # `tests/tree_guard.rs` holds the tokens it forbids as SHA-256 hashes, so that the
 # guard can scan itself and pass.

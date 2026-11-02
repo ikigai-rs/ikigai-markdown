@@ -72,6 +72,16 @@ impl Scratch {
     }
 }
 
+/// The module's space over `home`, with the file mount a host binds for named mappings:
+/// `ikigai-fs`, cacheable, at `urn:markdown:file:{path}` jailed to the home's `markdown`
+/// directory. The mapping endpoint reads through it, never off the disk itself.
+pub fn mounted(home: &Arc<ikigai_markdown::MappingHome>) -> EndpointSpace {
+    ikigai_markdown::space_with(home.clone()).bind(
+        ikigai_core::UriTemplate::parse(ikigai_markdown::FILE_TEMPLATE).unwrap(),
+        ikigai_fs::FileEndpoint::new(home.root().expect("a config home")).cacheable(),
+    )
+}
+
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);

@@ -30,8 +30,12 @@ fn conforms() {
     // covers is the one SPACE-NAME checks, and BODIES calls each endpoint's `invoke` and
     // `invoke_body` in it directly. No argument is declared `reads_body`, so BODY-INPUTS has
     // nothing to probe and no content store is needed.
-    let space = Arc::new(ikigai_markdown::space_with(home));
-    let kernel = Kernel::new(space.clone());
+    let space = Arc::new(ikigai_markdown::space_with(home.clone()));
+    // The kernel also holds the file mount a host binds for named mappings
+    // (`urn:markdown:file:{path}`, `ikigai-fs`, cacheable), since the mapping endpoint reads
+    // through it by request (Hypothesis H, ledger #2384). The mount is the host's, not this
+    // module's, so the suite walks the module's space alone.
+    let kernel = Kernel::new(Arc::new(common::mounted(&home)));
     let report = Suite::new()
         // Neither constructor is configuration-free (ledger #987), so neither names
         // itself and the host names the instance it mounts. `space_with(home)` is
@@ -39,6 +43,21 @@ fn conforms() {
         // home from the environment while it is built (on native; the wasm build has
         // no named-mapping door and reads nothing).
         .body_space(space.clone())
+        // The walk is the module's seven endpoints; the kernel's eighth is the host's mount.
+        .own_all([
+            ikigai_markdown::LIFT_ID,
+            ikigai_markdown::VOCABULARY_ID,
+            ikigai_markdown::MAPPING_ID,
+            ikigai_markdown::LINT_MAPPING_ID,
+            ikigai_markdown::LINT_EXPECTS_ID,
+            ikigai_markdown::SNAPSHOT_ID,
+            ikigai_markdown::LINT_CORPUS_ID,
+        ])
+        .inherit(
+            "file",
+            "ikigai-fs, the file mount a host binds at urn:markdown:file:{path} for named \
+             mappings; its own conformance test covers it",
+        )
         .host_named_space("ikigai_markdown::space_with(home)", space)
         .host_named_space("ikigai_markdown::space()", ikigai_markdown::space())
         // The module DEFINES this namespace: `urn:markdown:vocabulary` serves it.
@@ -89,7 +108,7 @@ fn conforms() {
         .run_blocking(&kernel);
     eprintln!("{report}");
     assert!(report.is_clean(), "{report}");
-    assert_eq!(report.endpoints, 7, "{report}");
+    assert_eq!(report.walked.len(), 7, "{report}");
     // A clean report says nothing about a check that could not look. BODIES without
     // `body_space` is unprobed on every endpoint, and that is not a pass.
     assert!(report.unprobed.is_empty(), "every check probes: {report}");

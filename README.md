@@ -139,16 +139,37 @@ like any other resource:
 source urn:file:decisions/0007-x.md | urn:markdown:lift mapping=urn:markdown:mapping:example
 ```
 
-The served mapping is cached under the golden thread `urn:file:<absolute path>` — the
-name a filesystem watcher cuts — so editing the installed file re-lifts every document
-under it. A name with no `mapping.ttl` behind it is a **not-found** naming the path it
-looked at; there is no fallback to another mapping, and none to an unmapped lift.
+**The module opens no file.** It reads the mapping BY REQUEST from
+`urn:markdown:file:mappings/{name}/mapping.ttl`, and the host decides what answers there:
+it binds a file module at `urn:markdown:file:{path}` jailed to the config home's
+`markdown` directory (`MappingHome::root`). With `ikigai-fs`:
+
+```rust,ignore
+let home = Arc::new(MappingHome::new(Some(home_dir)));
+let space = ikigai_markdown::space_with(home.clone()).bind(
+    UriTemplate::parse(ikigai_markdown::FILE_TEMPLATE)?,
+    ikigai_fs::FileEndpoint::new(home.root().unwrap()).cacheable(),
+);
+```
+
+So reading a named mapping takes the authority reading the file takes, and the caller
+holds it: the endpoint declares `urn:cap:fs:read:*`, and `ikigai-fs` checks a
+`urn:cap:fs:read:` grant over the mappings directory. A host that binds nothing there
+serves no named mapping; the name is a **not-found** that says so.
+
+With a cacheable mount the served mapping is cached under the file's golden thread,
+`urn:markdown:file:mappings/{name}/mapping.ttl`, which a write through the kernel cuts,
+and a host's watcher over the mount cuts for an edit made outside ikigai, so editing the
+installed file re-lifts every document under it. A name with no `mapping.ttl` behind it
+is a **not-found** naming the IRI it asked for; there is no fallback to another mapping,
+and none to an unmapped lift.
 
 A host mounts `ikigai_markdown::space()` for this machine's config home, or
 `space_with(Arc::new(MappingHome::new(Some(home))))` to serve another (`home` is a
 `PathBuf` naming the `ikigai` directory itself; `None` is a host with no config home,
-where a named mapping is a not-found). On wasm there is no config home and the
-endpoint is simply not bound. `space_with_budget(home, budget)` also sets the lifts'
+where a named mapping is a not-found), and binds the file mount beside either. On wasm
+there is no config home and the endpoint is simply not bound.
+`space_with_budget(home, budget)` also sets the lifts'
 time budget (`ikigai_markdown::EvaluationBudget`, re-exported from `ikigai-store`): make
 one per host and pass it to every space you mount, since the cap on evaluations still
 running past their budget is counted per budget. `space_under_budget(budget)` is the same
