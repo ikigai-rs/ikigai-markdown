@@ -2,8 +2,9 @@
 //!
 //! A standalone **ikigai module crate**: a host links it in and mounts [`space`].
 //! It binds `urn:markdown:lift`, `urn:markdown:vocabulary` — the terms the lift
-//! writes in — and, on hosts with a filesystem, `urn:markdown:mapping:{name}`: a
-//! mapping found by name in the config home (see [`MappingHome`]).
+//! writes in — and, on native hosts, `urn:markdown:mapping:{name}`: a mapping found by
+//! name in the config home (see [`MappingHome`]), read through the kernel from the file
+//! mount the host binds at [`FILE_TEMPLATE`]. The crate opens no file itself.
 //!
 //! ```text
 //! source urn:file:docs/notes/0007.md | urn:markdown:lift mapping=urn:file:notes.mapping.ttl
@@ -93,7 +94,10 @@ pub use lift::{lift, DocRef};
 pub use map::{apply, serialize};
 pub use mapping::{Citation, Mapping, Profile, Split};
 #[cfg(not(target_family = "wasm"))]
-pub use named::{mapping_endpoint, MappingHome, MAPPING_ID, MAPPING_TEMPLATE};
+pub use named::{
+    mapping_endpoint, MappingEndpoint, MappingHome, FILE_PREFIX, FILE_TEMPLATE, MAPPING_ID,
+    MAPPING_TEMPLATE,
+};
 pub use vocab::MD;
 
 use async_trait::async_trait;
@@ -124,8 +128,8 @@ pub const VOCABULARY_ID: &str = "markdown-vocabulary";
 pub const VOCABULARY: &str = include_str!("vocabulary.ttl");
 
 /// The module's space over **this machine's** config home: `urn:markdown:lift` and
-/// `urn:markdown:vocabulary` everywhere, plus `urn:markdown:mapping:{name}` on hosts
-/// that have a filesystem. Mount this in a host kernel's root. Its lifts run under
+/// `urn:markdown:vocabulary` everywhere, plus `urn:markdown:mapping:{name}` on native
+/// hosts, which reads from the file mount the host binds at [`FILE_TEMPLATE`]. Mount this in a host kernel's root. Its lifts run under
 /// the default [`EvaluationBudget`]: 5 s for every caller, up to 120 s by a grant, 120 s
 /// for root.
 ///
@@ -163,6 +167,10 @@ pub fn space_under_budget(budget: EvaluationBudget) -> EndpointSpace {
 /// The module's space with named mappings looked up under a config home the caller
 /// states — what a host serving another home mounts, and what a test mounts so the
 /// mappings it reads are ones it wrote.
+///
+/// A named mapping is read by request from [`FILE_TEMPLATE`], so the host also binds a
+/// file module there over [`MappingHome::root`] (see [`MappingHome`] for the wiring);
+/// without one, every named mapping is a not-found that says so.
 #[cfg(not(target_family = "wasm"))]
 pub fn space_with(home: std::sync::Arc<MappingHome>) -> EndpointSpace {
     space_with_budget(home, EvaluationBudget::default())

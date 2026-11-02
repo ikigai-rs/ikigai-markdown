@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use ikigai_core::{
     ArgRef, Capability, Description, EndpointSpace, Exact, FnEndpoint, Iri, Kernel, ReprType,
-    Representation, Request, Verb,
+    Representation, Request, UriTemplate, Verb,
 };
 use ikigai_markdown::MappingHome;
 
@@ -113,7 +113,17 @@ fn main() {
         die(usage)
     };
 
-    let space = ikigai_markdown::space_with(Arc::new(MappingHome::ambient()));
+    // A named mapping is read BY REQUEST from the file mount a host binds over the config
+    // home's `markdown` directory (Hypothesis H); this example is the host, so it binds
+    // `ikigai-fs` there.
+    let home = Arc::new(MappingHome::ambient());
+    let mut space: EndpointSpace = ikigai_markdown::space_with(home.clone());
+    if let Some(root) = home.root() {
+        space = space.bind(
+            UriTemplate::parse(ikigai_markdown::FILE_TEMPLATE).expect("a valid template"),
+            ikigai_fs::FileEndpoint::new(root),
+        );
+    }
     let mut request = match command.as_str() {
         "mapping" | "expects" => {
             let [_, m] = args.as_slice() else { die(usage) };

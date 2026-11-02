@@ -46,8 +46,9 @@ Followed by reading the source:
 - The report is sorted, so the same inputs give the same text.
 - A mapping that does not load is a finding in the report, not a refusal.
 - A refusal names the argument (`src`, `as`, `mapping`, `name`, `path`) and says what was
-  expected; a missing named mapping names the path that was looked at; the time-budget refusals
-  say what to do (narrow the construct, or ask the host for a larger budget).
+  expected; a missing named mapping names the IRI that was asked for, and says when no file
+  mount serves it; the time-budget refusals say what to do (narrow the construct, or ask the
+  host for a larger budget).
 - Nothing is written in color, by the endpoints or by the examples.
 
 ## How it is tested

@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use ikigai_core::{
     ArgRef, Capability, Description, EndpointSpace, Exact, FnEndpoint, Iri, Kernel, ReprType,
-    Representation, Request, Verb,
+    Representation, Request, UriTemplate, Verb,
 };
 use ikigai_markdown::MappingHome;
 use oxigraph::io::{RdfFormat, RdfParser};
@@ -148,9 +148,19 @@ fn main() {
         walk(dir, &mut files);
     }
 
-    // A named mapping is served by the module's own space, from the config home; a
-    // mapping file is bound here instead, under the same by-reference call.
-    let mut space: EndpointSpace = ikigai_markdown::space();
+    // A named mapping is served by the module's space from the config home; a mapping
+    // file is bound here instead, under the same by-reference call.
+    // A named mapping is read BY REQUEST from the file mount a host binds over the config
+    // home's `markdown` directory (Hypothesis H); this example is the host, so it binds
+    // `ikigai-fs` there.
+    let home = Arc::new(MappingHome::ambient());
+    let mut space: EndpointSpace = ikigai_markdown::space_with(home.clone());
+    if let Some(root) = home.root() {
+        space = space.bind(
+            UriTemplate::parse(ikigai_markdown::FILE_TEMPLATE).expect("a valid template"),
+            ikigai_fs::FileEndpoint::new(root),
+        );
+    }
     if let Some(path) = &mapping_file {
         space = space.bind(
             Exact::new(MAPPING_IRI),
