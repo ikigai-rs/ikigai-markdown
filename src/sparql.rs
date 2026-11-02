@@ -427,25 +427,40 @@ mod tests {
     fn the_kernels_clock_runs_an_allowance_out() {
         // What a wasm lift runs on (ledger #2197): before, an allowance there read no clock
         // and never refused.
-        let budget = EvaluationBudget::new(TimeBudget::new(std::time::Duration::from_millis(50)));
+        //
+        // Only the injected clock moves here (ledger #2872). Whatever is left of the
+        // allowance when a construct starts becomes that construct's deadline in REAL time,
+        // so the construct runs while the kernel's clock leaves the whole budget, which no
+        // ordinary construct comes near, and the last millisecond is checked on the kernel's
+        // clock without being spent: 1 ms of real time was a deadline a loaded machine missed.
+        let total = 60_000;
+        let budget =
+            EvaluationBudget::new(TimeBudget::new(std::time::Duration::from_millis(total)));
         let caller = no_grants();
         let store = Store::new().unwrap();
         let kernel = Kernel(std::sync::atomic::AtomicU64::new(1_000));
         let now = || kernel.now();
         let allowance = Allowance::new(&budget, &caller, Clock::Invocation(&now));
 
-        kernel.set(1_049);
-        allowance.check_left("the snapshot").unwrap();
         assert!(construct(ORDINARY, &store, "construct 1", &allowance)
             .unwrap()
             .is_some());
 
-        kernel.set(1_050);
+        // One millisecond before the deadline, the allowance is not spent, and what is left
+        // is read off the kernel's clock alone.
+        kernel.set(1_000 + total - 1);
+        allowance.check_left("the snapshot").unwrap();
+        assert_eq!(
+            allowance.remaining("construct 2").unwrap().as_deref(),
+            Some("1")
+        );
+
+        kernel.set(1_000 + total);
         let Err(Error::Timeout(detail)) = allowance.check_left("the snapshot") else {
             panic!("an allowance on the kernel's clock did not run out");
         };
         assert!(
-            detail.starts_with("the snapshot ran past") && detail.contains("50 ms"),
+            detail.starts_with("the snapshot ran past") && detail.contains("60000 ms"),
             "{detail}"
         );
         let Err(Error::Timeout(detail)) = construct(ORDINARY, &store, "construct 2", &allowance)
@@ -453,9 +468,10 @@ mod tests {
             panic!("a construct past the kernel's deadline was started");
         };
         assert!(
-            detail.starts_with("construct 2 was not started"),
+            detail.starts_with("construct 2 was not started") && detail.contains("60000 ms"),
             "{detail}"
         );
+        assert_eq!(budget.overdue_evaluations(), 0);
     }
 
     #[test]
