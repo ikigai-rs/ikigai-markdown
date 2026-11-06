@@ -1,0 +1,72 @@
+Snapshot assembly memory measurement (ledger #1683)
+
+Environment: macOS/Darwin 27.2.0 arm64; rustc 1.99.1 (58cf8f9c3 2026-10-13),
+release profile, ikigai-core 0.3.0, oxigraph 0.5.13. These are individual local
+measurements, not a portable memory ceiling or a CI performance assertion.
+
+Reproduction before the fix
+
+Base commit: e4e9ed43f25851018b26d40a23caf6f307622369.
+The revised a_snapshot_is_one_graph_per_document_named_by_its_path test failed
+on that implementation: "one contiguous block per document", left: 6, right: 3.
+The three fixture documents were interleaved by the global line sort.
+
+The ignored tests/snapshot_memory.rs test measures the real snapshot endpoint,
+including kernel routing, source endpoints and the returned snapshot. It uses
+400 documents, each with 1,000 headings and paragraphs, no mapping, and root
+capability. Total source bytes: 29,912,000. Snapshot bytes: 221,344,400 in every
+run. This reproduces the reported scale (about 1 GB peak for a 224 MB snapshot),
+with different synthetic input; it does not repeat the original experiment.
+
+Build and run (each measurement in its own process, sequentially):
+
+  cargo test --release --test snapshot_memory --no-run
+  SNAPSHOT_CACHE=1 /usr/bin/time -l target/release/deps/snapshot_memory-<hash> --ignored --nocapture
+  SNAPSHOT_CACHE=0 /usr/bin/time -l target/release/deps/snapshot_memory-<hash> --ignored --nocapture
+
+Use the executable path printed by cargo. Run the same harness on the base
+implementation for the "before" measurements. SNAPSHOT_DOCS overrides 400.
+SNAPSHOT_CACHE=1 serves cacheable source documents; 0 serves live documents,
+which also makes their lift answers uncacheable. The test asserts the cache
+status of the last document's lift after the snapshot. Earlier lifts may have
+been evicted. Endpoint-owned source bytes remain resident in both modes.
+
+Results: /usr/bin/time -l maximum resident set size, in bytes
+
+                         Before          After         Reduction
+  Cacheable sources      970,735,616     565,297,152      41.8%
+  Live sources           900,759,552     496,680,960      44.9%
+
+Elapsed seconds were 9.51/10.43 (cacheable, before/after) and 9.33/9.36 (live).
+The purpose is memory reduction; these single timings do not establish a
+throughput improvement.
+
+Cache decision and byte bound
+
+The cached/live peak difference was 69,976,064 bytes before the fix and
+68,616,192 after. This estimates the combined effect of cached sources and
+lifts, not an exact accounting of lift bytes alone. Core 0.3.0's default cache
+is bounded at 64 MiB and 4,096 entries; it does not retain every full lift.
+Keep normal lift sub-requests and cache policy: removing caching would save
+much less here than removing the corpus-wide line allocations and join, and
+would give up ordinary reuse. Hosts can choose a different kernel cache policy.
+
+Keep MAX_SNAPSHOT_BYTES at 256 MiB. The measured 221 MB snapshot still needs
+about 565 MB peak with default caching. Raising the limit would raise that
+cost. This byte limit is not a process memory ceiling. The builder now retains
+one document's temporary lines alongside its growing answer, but the kernel's
+Vec-backed response path and host cache can retain additional bytes. This is
+incremental assembly, not a streaming transport. Compression is outside this
+change.
+
+Contract and checks
+
+Documents are emitted in path order, each as one sorted, deduplicated N-Quads
+block. Output is deterministic but no longer globally sorted. Tests pin that
+contract, list-order/duplicate independence, sorted unreadable-document blocks,
+and identical comparison results for old globally sorted or shuffled baselines.
+Existing full-lift comparison tests continue to check reduction semantics.
+
+Accessibility: ACCESSIBILITY.md was read. Output remains plain text; the
+ordering contract and description were updated. No browser, accessibility
+checker or assistive technology was used.

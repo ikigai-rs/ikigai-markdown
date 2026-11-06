@@ -2,8 +2,9 @@
 //!
 //! - `urn:markdown:lint:snapshot` lifts a LIST of documents (newline-separated IRIs, the
 //!   map convention) through `urn:markdown:lift`, one sub-request each, and answers the
-//!   union reduced to what the corpus check compares: one named graph per document, sorted
-//!   N-Quads. Saved, it is the BASELINE a later corpus check compares with.
+//!   union reduced to what the corpus check compares: one named graph per document, in path
+//!   order, with sorted N-Quads within each document. Saved, it is the BASELINE a later
+//!   corpus check compares with.
 //! - `urn:markdown:lint:mapping`, `urn:markdown:lint:expects` and `urn:markdown:lint:corpus`
 //!   answer the three checks in [`crate::lint`], as text (the default) or Turtle.
 //!
@@ -205,7 +206,7 @@ pub(crate) struct SnapshotEndpoint {
 }
 
 impl SnapshotEndpoint {
-    /// Lift every listed document; the union, reduced, as sorted N-Quads.
+    /// Lift in path order, appending each document's sorted, reduced N-Quads.
     async fn lift(
         &self,
         inv: &Invocation<'_>,
@@ -216,8 +217,8 @@ impl SnapshotEndpoint {
         let list = document_list(docs)?;
         let now = || inv.now();
         let allowance = Allowance::new(&self.budget, inv.capability, Clock::of(&now));
-        let (mut read, mut produced) = (0usize, 0usize);
-        let mut lines: Vec<String> = Vec::new();
+        let mut read = 0usize;
+        let mut out = Vec::new();
         for (i, iri) in list.iter().enumerate() {
             allowance.check_left(&format!(
                 "the snapshot (at document {} of {})",
@@ -274,10 +275,7 @@ impl SnapshotEndpoint {
                 // A document the lift cannot read (not UTF-8) is part of the answer, not a
                 // refusal of the whole corpus: its graph says so, and the check reports it.
                 Err(Error::InvalidArgument { name, detail }) if name == "src" => {
-                    for line in unreadable(path.as_deref(), iri, &detail)? {
-                        produced += line.len() + 1;
-                        lines.push(line);
-                    }
+                    append_document(&mut out, unreadable(path.as_deref(), iri, &detail)?, iri)?;
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -290,29 +288,36 @@ impl SnapshotEndpoint {
                     Error::Endpoint(format!("the lift of `{iri}` is not N-Quads: {e}"))
                 })?);
             }
-            for quad in crate::compare::reduce(quads) {
-                let line = format!("{quad} .");
-                produced += line.len() + 1;
-                lines.push(line);
-            }
-            if produced > MAX_SNAPSHOT_BYTES {
-                return Err(invalid(
-                    "docs",
-                    format!(
-                        "the snapshot comes to more than {MAX_SNAPSHOT_BYTES} bytes \
-                         (MAX_SNAPSHOT_BYTES) by `{iri}`; lint the corpus in parts"
-                    ),
-                ));
-            }
+            let lines = crate::compare::reduce(quads)
+                .into_iter()
+                .map(|quad| format!("{quad} ."))
+                .collect();
+            append_document(&mut out, lines, iri)?;
         }
-        lines.sort();
-        lines.dedup();
-        let mut out = lines.join("\n");
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        Ok(out.into_bytes())
+        Ok(out)
     }
+}
+
+/// Keep only one document's line allocations alongside the accumulated answer. Check
+/// the serialized size before appending, including unreadable-document blocks.
+fn append_document(out: &mut Vec<u8>, mut lines: Vec<String>, iri: &Iri) -> Result<()> {
+    lines.sort_unstable();
+    lines.dedup();
+    let bytes: usize = lines.iter().map(|line| line.len() + 1).sum();
+    if bytes > MAX_SNAPSHOT_BYTES - out.len() {
+        return Err(invalid(
+            "docs",
+            format!(
+                "the snapshot comes to more than {MAX_SNAPSHOT_BYTES} bytes \
+                 (MAX_SNAPSHOT_BYTES) by `{iri}`; lint the corpus in parts"
+            ),
+        ));
+    }
+    for line in lines {
+        out.extend_from_slice(line.as_bytes());
+        out.push(b'\n');
+    }
+    Ok(())
 }
 
 /// A predicate named `prefix:local` with one of `prefixes` (or a namespace every report
@@ -370,7 +375,8 @@ impl Endpoint for SnapshotEndpoint {
                 "Lift a list of documents through urn:markdown:lift and answer the union, \
                  reduced to what urn:markdown:lint:corpus compares (everything the mapping \
                  produced; the structure's paths, headings, frontmatter keys and citation \
-                 matches): one named graph per document, sorted N-Quads. Saved, it is the \
+                 matches): one named graph per document in path order, with sorted N-Quads \
+                 within each document. Saved, it is the \
                  baseline a later check compares with. Bounded in documents, bytes and the \
                  caller's time budget; past a bound it refuses, never answering for part of \
                  the corpus.",
