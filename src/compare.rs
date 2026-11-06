@@ -80,8 +80,8 @@ struct Doc {
 /// Indexing reads only each line's graph name, and keeps where the line starts; a
 /// document's quads are parsed when it is compared, and dropped after. So the memory a
 /// comparison holds beyond the snapshot's own bytes is one offset per line and the largest
-/// document, not the corpus, and no order of the lines is assumed: a snapshot sorts its
-/// lines whole, which puts one document's records and its structure far apart.
+/// document, not the corpus. No order of the lines is assumed: older snapshots sorted
+/// lines globally, putting one document's records and its structure far apart.
 struct Snapshot<'a> {
     bytes: &'a [u8],
     what: &'static str,

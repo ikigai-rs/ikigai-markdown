@@ -379,14 +379,38 @@ fn a_snapshot_is_one_graph_per_document_named_by_its_path() {
             "<urn:markdown:doc:decisions/0003-name-mappings-in-config.md>",
         ]
     );
-    let mut sorted: Vec<&str> = snap.lines().collect();
-    sorted.sort();
-    sorted.dedup();
-    assert_eq!(
-        sorted,
-        snap.lines().collect::<Vec<_>>(),
-        "sorted, each line once"
+    let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
+    for (line, quad) in snap
+        .lines()
+        .zip(RdfParser::from_format(RdfFormat::NQuads).for_slice(snap.as_bytes()))
+    {
+        let graph = quad.unwrap().graph_name.to_string();
+        if blocks.last().is_none_or(|(name, _)| name != &graph) {
+            blocks.push((graph, Vec::new()));
+        }
+        blocks.last_mut().unwrap().1.push(line.to_string());
+    }
+    assert_eq!(blocks.len(), 3, "one contiguous block per document");
+    assert!(
+        blocks.windows(2).all(|w| w[0].0 < w[1].0),
+        "documents in path order"
     );
+    for (_, lines) in blocks {
+        assert!(
+            lines.windows(2).all(|w| w[0] < w[1]),
+            "sorted, each line once within a document"
+        );
+    }
+}
+
+#[test]
+fn snapshot_blocks_do_not_depend_on_list_order_or_repeated_documents() {
+    let docs = corpus(&[]);
+    let expected = snapshot(&docs);
+    let mut reordered = docs.clone();
+    reordered.reverse();
+    reordered.push(docs[0].clone());
+    assert_eq!(snapshot(&reordered), expected);
 }
 
 #[test]
@@ -674,13 +698,19 @@ fn check_against(baseline: &str) -> Result<String, Error> {
 #[test]
 fn a_baseline_compares_the_same_in_any_line_order() {
     // The check reads a baseline one document at a time by indexing where each graph's
-    // lines are, so it assumes no order: a snapshot sorts its lines whole, which puts a
-    // document's records far from its structure, and a baseline by value may be in any
+    // lines are, so it assumes no order: older snapshots sorted their lines globally,
+    // putting records far from their structure, and a baseline by value may be in any
     // order, with comments and blank lines, one of which ends like a statement.
     let snap = snapshot(&corpus(&[]));
     let expected = check_against(&snap).unwrap();
     assert!(expected.contains("citation-lost"), "{expected}");
     let mut lines: Vec<&str> = snap.lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        check_against(&lines.join("\n")).unwrap(),
+        expected,
+        "older, globally sorted baselines still compare the same"
+    );
     lines.reverse();
     let (a, b) = lines.split_at(lines.len() / 2);
     let shuffled = format!(
@@ -759,6 +789,22 @@ fn a_document_the_lift_cannot_read_is_reported_not_refused() {
     );
     let k = kernel_with(space, &docs, &example(), None);
     let listed = format!("{}\n{ROOT}decisions/0004-binary.md", list(&docs));
+    let snap = call(
+        &k,
+        ikigai_markdown::SNAPSHOT_IRI,
+        &[("docs", &listed), ("root", ROOT), ("mapping", MAPPING_IRI)],
+    )
+    .unwrap();
+    let binary: Vec<_> = snap
+        .lines()
+        .filter(|line| line.contains("<urn:markdown:doc:decisions/0004-binary.md> ."))
+        .collect();
+    assert_eq!(binary.len(), 3);
+    assert!(binary.windows(2).all(|w| w[0] < w[1]));
+    assert!(
+        snap.ends_with(&format!("{}\n", binary.join("\n"))),
+        "unreadable document has one sorted block in path order"
+    );
     let text = call(
         &k,
         ikigai_markdown::LINT_CORPUS_IRI,

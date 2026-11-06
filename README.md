@@ -208,7 +208,7 @@ what changed. It is four resources, each with a text face (the default) and a Tu
 |---|---|
 | `urn:markdown:lint:mapping mapping=…` | The mapping on its own. Every `md:split` and `md:citation` pattern compiles as a Rust regex, every `md:construct` parses and is a CONSTRUCT within the lift's bounds, and nothing writes a blank node. What the constructs write is checked against the shape the mapping states with `md:shape`. With no shape, the report says so. |
 | `urn:markdown:lint:expects mapping=…` | What the mapping depends on in a document, for the person writing the documents: the paths, frontmatter keys, headings, heading levels and citation forms it reads, and every other literal its constructs compare document text with. Read straight from the constructs' SPARQL algebra, with nothing run. |
-| `urn:markdown:lint:snapshot docs=… root=… mapping=…` | A list of documents (one IRI per line, so a list can be piped in) lifted and reduced to what the corpus check compares, as sorted N-Quads with one graph per document. Save it, and it is a baseline. |
+| `urn:markdown:lint:snapshot docs=… root=… mapping=…` | A list of documents (one IRI per line, so a list can be piped in) lifted and reduced to what the corpus check compares, as N-Quads with one graph per document, in path order and sorted within each document. Save it, and it is a baseline. |
 | `urn:markdown:lint:corpus docs=… root=… mapping=… baseline=…` | The documents lifted now, compared per document with a baseline snapshot. It reports records and fields lost, gained or changed, citations no longer recognized, headings the mapping reads that vanished or moved, frontmatter keys the mapping does not read, frontmatter that no longer parses, documents the lift cannot read, and values that break the stated shape. The output is sorted and deterministic. |
 
 `root` is an IRI prefix the documents share. What follows it is each document's path, and
@@ -238,7 +238,11 @@ request is refused with the bound's name. It is never answered for part of the c
 `MAX_DOCUMENTS` (10,000), `MAX_DOCUMENT_BYTES` (4 MiB), `MAX_CORPUS_BYTES` (64 MiB of
 documents), `MAX_SNAPSHOT_BYTES` (256 MiB, for the snapshot taken and for a baseline), and
 the caller's time budget, the same one a lift runs under, checked before each document.
-For a corpus larger than these, lint it in parts. The corpus check reads each snapshot one
+For a corpus larger than these, lint it in parts. The snapshot appends one reduced document
+block at a time; it holds the answer's bytes and one document's lift, quads and sorted lines.
+The kernel may also cache lifts and source documents under its host's cache policy (the
+kernel's default cache limit is 64 MiB). The 256 MiB snapshot limit remains a byte limit,
+not a process memory limit; it has not been raised. The corpus check reads each snapshot one
 document at a time, so beyond the snapshots' own bytes it holds the largest document, plus,
 when the mapping states a shape, the triples that shape reads.
 
