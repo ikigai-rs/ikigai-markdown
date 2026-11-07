@@ -47,8 +47,8 @@ Followed by reading the source:
 - A mapping that does not load is a finding in the report, not a refusal.
 - A refusal names the argument (`src`, `as`, `mapping`, `name`, `path`) and says what was
   expected; a missing named mapping names the IRI that was asked for, and says when no file
-  mount serves it; the time-budget refusals say what to do (narrow the construct, or ask the
-  host for a larger budget).
+  mount serves it; the time-budget refusals start with what to do (narrow the construct, lint fewer
+  documents, or ask the host for a larger budget).
 - Nothing is written in color, by the endpoints or by the examples.
 
 ## How it is tested
@@ -58,6 +58,8 @@ Followed by reading the source:
   `what_a_construct_writes_is_checked_against_the_stated_shape`, `a_mapping_with_no_shape_says_so`,
   `an_unchanged_corpus_reports_nothing` and `a_changed_format_is_reported_document_by_document`;
   the doctest on `Report::to_text` pins its header, tally and finding line.
+- `src/sparql.rs` tests all three time-budget refusals for an action first and no internal
+  ledger reference; `tests/eval_budget.rs` and `tests/lint.rs` check the public refusal text.
 - **No automated accessibility checker, browser or assistive technology has been used on this
   output.**
 
@@ -70,8 +72,6 @@ Found by reading the source on 2026-10-31, not by testing:
 - Finding lines separate severity, code and message only by runs of spaces, padded to align
   columns (`  error    profile-invalid  …`); how a screen reader or braille display presents that
   has not been tried.
-- One time-budget refusal in `src/sparql.rs` cites an internal work-item number in parentheses,
-  which a reader outside the project cannot look up.
 - The examples print `lift failed: …` or `query … failed: …` with the underlying error and say
   nothing more about what to do.
 
@@ -95,3 +95,4 @@ through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-ma
 | Date | Change |
 |---|---|
 | 2026-10-31 | First version. |
+| 2026-11-07 | Time-budget refusals lead with the recovery action and omit internal work-item numbers. |

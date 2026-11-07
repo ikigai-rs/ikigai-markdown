@@ -217,9 +217,9 @@ impl<'a> Allowance<'a> {
         match self.left() {
             None => Ok(None),
             Some(0) => Err(Error::Timeout(format!(
-                "{what} was not started: this lift's constructs had already used its whole \
-                 time budget of {} ms (ledger #1344). The budget is set by the host. Narrow \
-                 the constructs, or ask the host for a larger budget",
+                "Narrow the constructs, or ask the host for a larger budget. {what} was not \
+                 started: this lift's constructs had already used its whole time budget of \
+                 {} ms. The budget is set by the host",
                 self.total.as_millis()
             ))),
             Some(left) => Ok(Some(left.to_string())),
@@ -231,9 +231,9 @@ impl<'a> Allowance<'a> {
     pub(crate) fn check_left(&self, what: &str) -> Result<()> {
         if self.left() == Some(0) {
             return Err(Error::Timeout(format!(
-                "{what} ran past the caller's time budget of {} ms and was stopped. The budget \
-                 is set by the host, and a `urn:cap:store:budget:<ms>` grant raises it. Lint \
-                 fewer documents at a time, or ask the host for a larger budget",
+                "Lint fewer documents at a time, or ask the host for a larger budget. {what} \
+                 ran past the caller's time budget of {} ms and was stopped. The budget is \
+                 set by the host, and a `urn:cap:store:budget:<ms>` grant raises it",
                 self.total.as_millis()
             )));
         }
@@ -245,11 +245,11 @@ impl<'a> Allowance<'a> {
     fn explain(&self, e: Error, what: &str, left: Option<&str>) -> Error {
         match e {
             Error::Timeout(_) => Error::Timeout(format!(
-                "{what} ran past this lift's time budget of {} ms and was stopped (ledger \
-                 #1344); a lift's constructs share one budget, and {} ms of it was left for this \
-                 one. The budget is set by the host, and a `urn:cap:store:budget:<ms>` grant \
-                 raises it. Narrow the construct — fewer unrelated patterns, a bound subject — \
-                 or ask the host for a larger budget",
+                "Narrow the construct — fewer unrelated patterns, a bound subject — or ask \
+                 the host for a larger budget. {what} ran past this lift's time budget of \
+                 {} ms and was stopped; a lift's constructs share one budget, and {} ms of it \
+                 was left for this one. The budget is set by the host, and a \
+                 `urn:cap:store:budget:<ms>` grant raises it",
                 self.total.as_millis(),
                 left.unwrap_or("all"),
             )),
@@ -362,6 +362,40 @@ mod tests {
     const ORDINARY: &str = "CONSTRUCT { ?s <urn:ex:seen> true } WHERE { ?s ?p ?o }";
 
     #[test]
+    fn time_budget_refusals_lead_with_an_action_and_omit_internal_references() {
+        let budget = EvaluationBudget::new(TimeBudget::new(std::time::Duration::ZERO));
+        let caller = no_grants();
+        let allowance = Allowance::new(&budget, &caller, Clock::host());
+        for (error, action) in [
+            (
+                allowance.remaining("construct 2").unwrap_err(),
+                "Narrow the constructs",
+            ),
+            (
+                allowance.check_left("the snapshot").unwrap_err(),
+                "Lint fewer documents",
+            ),
+            (
+                allowance.explain(
+                    Error::Timeout("store timeout".into()),
+                    "construct 1",
+                    Some("0"),
+                ),
+                "Narrow the construct",
+            ),
+        ] {
+            let Error::Timeout(detail) = error else {
+                panic!("{error}");
+            };
+            assert!(
+                !detail.contains("ledger") && !detail.contains("#1344"),
+                "{detail}"
+            );
+            assert!(detail.starts_with(action), "{detail}");
+        }
+    }
+
+    #[test]
     fn a_construct_draws_on_what_the_lift_has_left() {
         let budget = EvaluationBudget::new(TimeBudget::new(std::time::Duration::from_millis(50)));
         let caller = no_grants();
@@ -381,7 +415,7 @@ mod tests {
             panic!("{err}");
         };
         assert!(
-            detail.starts_with("construct 2 was not started") && detail.contains("50 ms"),
+            detail.contains("construct 2 was not started") && detail.contains("50 ms"),
             "{detail}"
         );
         assert_eq!(budget.overdue_evaluations(), 0);
@@ -460,7 +494,7 @@ mod tests {
             panic!("an allowance on the kernel's clock did not run out");
         };
         assert!(
-            detail.starts_with("the snapshot ran past") && detail.contains("60000 ms"),
+            detail.contains("the snapshot ran past") && detail.contains("60000 ms"),
             "{detail}"
         );
         let Err(Error::Timeout(detail)) = construct(ORDINARY, &store, "construct 2", &allowance)
@@ -468,7 +502,7 @@ mod tests {
             panic!("a construct past the kernel's deadline was started");
         };
         assert!(
-            detail.starts_with("construct 2 was not started") && detail.contains("60000 ms"),
+            detail.contains("construct 2 was not started") && detail.contains("60000 ms"),
             "{detail}"
         );
         assert_eq!(budget.overdue_evaluations(), 0);
