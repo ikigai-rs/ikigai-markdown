@@ -299,7 +299,9 @@ fn an_ordinary_mapping_is_far_inside_a_short_budget() {
 fn the_public_apply_runs_under_the_default_base() {
     let (elapsed, text) = &probe("public")[0];
     assert!(
-        text.starts_with("err timeout: construct 1 ran past") && text.contains("of 5000 ms"),
+        text.starts_with("err timeout: Narrow the construct")
+            && text.contains("construct 1 ran past")
+            && text.contains("of 5000 ms"),
         "{text}"
     );
     assert!(*elapsed < Duration::from_secs(10), "{elapsed:?}: {text}");

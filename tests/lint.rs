@@ -923,7 +923,9 @@ fn a_corpus_past_the_callers_time_budget_is_refused() {
         panic!("{err}");
     };
     assert!(
-        detail.starts_with("the snapshot (at document 1 of 3) ran past the caller's time budget"),
+        detail.starts_with("Lint fewer documents at a time, or ask the host for a larger budget.")
+            && detail
+                .contains("the snapshot (at document 1 of 3) ran past the caller's time budget"),
         "{detail}"
     );
 }
