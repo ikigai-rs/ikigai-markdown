@@ -95,8 +95,9 @@ ikigai-conformance = "0.14.0"
 # cannot see. 0.1.43: 0.1.23 pulls an `ikigai-resolve` that predates core's `Resolved`
 # change, and conformance 0.6.0 brings core 0.1.89 into the test build. 0.2.0 is the
 # engine on core 0.2.0 (ledger #2261); 0.3.0 moves it to core 0.3.0
-# (the scoped content store, ledger #2965).
-ikigai-engine = "0.3.0"
+# (the scoped content store, ledger #2965). 0.4.0 adds Engine::with_scope
+# (ledger #3081); the 0.3.x requirement excludes all 0.4 releases.
+ikigai-engine = "0.4.0"
 # The engine reads each contract as `Meta as=application/json`; without a renderer
 # it fails open and the pipeline tests prove nothing.
 serde_json = "1"
