@@ -57,8 +57,9 @@ oxigraph = { version = "0.5.11", default-features = false }
 # (ledger #1108), in 0.2.11, and `EvaluationBudget`, the time budget on an evaluation this
 # crate runs itself rather than through a store door (ledger #1344), in 0.2.19.
 # 0.4.0 is the store on core 0.3.0 (the scoped content store, ledger #2965).
-# ⚠ `"0.4.0"` is a CEILING as well as a floor — `<0.5.0`.
-ikigai-store = { version = "0.4.0", default-features = false }
+# 0.5.0 adds the store-graph-written resource (ledger #3348).
+# ⚠ `"0.5.0"` is a CEILING as well as a floor — `<0.6.0`.
+ikigai-store = { version = "0.5.0", default-features = false }
 # The parser oxigraph itself uses, named so a construct's ALGEBRA can be measured by
 # `budget::check_query` before oxigraph plans it. Already in the graph through oxigraph,
 # which pins `=0.4.7` and converts from this type (`for_query`); the caret unifies with it.
@@ -96,8 +97,9 @@ ikigai-conformance = "0.14.0"
 # change, and conformance 0.6.0 brings core 0.1.89 into the test build. 0.2.0 is the
 # engine on core 0.2.0 (ledger #2261); 0.3.0 moves it to core 0.3.0
 # (the scoped content store, ledger #2965). 0.4.0 adds Engine::with_scope
-# (ledger #3081); the 0.3.x requirement excludes all 0.4 releases.
-ikigai-engine = "0.4.0"
+# (ledger #3081). 0.5.0 refuses a relative or empty config home (ledger #3348).
+# ⚠ A CEILING as well as a floor: `<0.6.0`.
+ikigai-engine = "0.5.0"
 # The engine reads each contract as `Meta as=application/json`; without a renderer
 # it fails open and the pipeline tests prove nothing.
 serde_json = "1"
