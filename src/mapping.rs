@@ -34,6 +34,8 @@
 //! reading one from a cloned repository risks misinterpretation, not compromise.
 //! Treat a stranger's mapping as a claim about meaning, not as configuration.
 
+use std::collections::HashSet;
+
 use oxigraph::io::{RdfFormat, RdfParser};
 use oxigraph::model::{NamedOrBlankNode, Term, Triple};
 use oxigraph::store::Store;
@@ -172,10 +174,16 @@ pub(crate) fn read_raw(turtle: &str, base: &str) -> Result<RawMapping, String> {
         .with_base_iri(base)
         .map_err(|e| format!("mapping base IRI `{base}`: {e}"))?;
     let mut triples: Vec<Triple> = Vec::new();
+    let mut seen = HashSet::new();
     let mut quads = parser.for_slice(turtle.as_bytes());
     for quad in &mut quads {
         let quad = quad.map_err(|e| format!("mapping is not valid Turtle: {e}"))?;
-        triples.push(Triple::new(quad.subject, quad.predicate, quad.object));
+        let triple = Triple::new(quad.subject, quad.predicate, quad.object);
+        // RDF graphs are sets: repeating a statement does not add a second
+        // mapping, profile value, or construct. Keep first-seen order for reports.
+        if seen.insert(triple.clone()) {
+            triples.push(triple);
+        }
     }
     let prefixes = quads
         .prefixes()

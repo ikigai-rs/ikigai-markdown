@@ -46,6 +46,16 @@ up anywhere in `src/`.
 Three teams with three document conventions are three mapping files and zero lines of
 code. `urn:markdown:vocabulary` serves the `md:` terms.
 
+Frontmatter keeps scalar text without inferring types, including scalar aliases
+(`copy: *anchor`). Collection aliases are not expanded: they produce an
+`md:frontmatterError` asking you to write the collection at each use. No partial
+fields are emitted on a frontmatter error; the remaining Markdown still lifts.
+
+Structural node IRIs use document order (`#b1`, `#b2`, and so on). Identical input
+produces identical IRIs and no blank nodes, but inserting an earlier block can
+renumber later nodes. Mappings that need identities across edits should mint domain
+IRIs from document keys or content rather than reuse structural block IRIs.
+
 ## Caching: two golden threads
 
 A lift is a pure function of **(document bytes, mapping bytes)**. `src` and `mapping`
