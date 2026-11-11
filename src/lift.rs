@@ -31,6 +31,8 @@
 //!   `md:value` (the named group `v`, else group 1, else the whole match), `md:line`,
 //!   `md:block`?, `md:section`?, `md:document`.
 
+use std::collections::HashMap;
+
 use oxigraph::model::{GraphName, Literal, NamedNode, NamedOrBlankNode, Quad, Term};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use yaml_rust2::parser::{Event as YamlEvent, MarkedEventReceiver, Parser as YamlParser};
@@ -459,6 +461,17 @@ fn structure(
                 out.rel(node.clone(), "parent", parent);
                 out.int(node.clone(), "order", order);
                 out.int(node.clone(), "line", lines.line(range.start) as i64);
+                out.int(
+                    node.clone(),
+                    "endLine",
+                    lines.end_line(range.start, range.end) as i64,
+                );
+                extents.blocks.push(Extent {
+                    start: range.start,
+                    end: range.end,
+                    depth: stack.len(),
+                    node: node.clone(),
+                });
                 if let Some(section) = extents.section_of(&node) {
                     out.rel(node, "section", section);
                 }
@@ -698,8 +711,26 @@ impl MarkedEventReceiver for YamlFields {
 /// `multi = false` did: the stream's events up to the end of the first document.
 fn read_yaml(yaml: &str, receiver: &mut YamlFields) -> Result<(), ScanError> {
     let mut parser = YamlParser::new_from_str(yaml);
+    let mut scalars = HashMap::new();
     loop {
-        let (event, mark) = parser.next_token()?;
+        let (mut event, mark) = parser.next_token()?;
+        match &event {
+            YamlEvent::Scalar(_, _, anchor, _) if *anchor != 0 => {
+                scalars.insert(*anchor, event.clone());
+            }
+            YamlEvent::Alias(anchor) => {
+                // Feed a scalar at the alias's location through the same key/value
+                // handling as a written scalar. Silently skipping an alias leaves
+                // a pending key behind and assigns the next key as its value.
+                event = scalars.get(anchor).cloned().ok_or_else(|| {
+                    ScanError::new(
+                        mark,
+                        "YAML collection aliases are not supported; write the collection at each use",
+                    )
+                })?;
+            }
+            _ => {}
+        }
         let end = matches!(event, YamlEvent::DocumentEnd | YamlEvent::StreamEnd);
         receiver.on_event(event, mark);
         if end {

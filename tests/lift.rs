@@ -560,3 +560,167 @@ fn every_term_the_lift_writes_is_in_the_vocabulary() {
     assert!(missing.is_empty(), "undefined md: terms: {missing:?}");
     assert!(terms.contains(&format!("{}Image", ikigai_markdown::MD)));
 }
+
+#[test]
+fn thematic_breaks_have_extents_and_own_their_citations() {
+    let profile = Mapping::parse(
+        r#"@prefix md: <https://ikigai-rs.dev/ns/md#> .
+           <#m> a md:Mapping ;
+             md:citation [ md:name "rule" ; md:pattern "\\* \\* \\*" ] ."#,
+        "urn:test:m",
+    )
+    .unwrap()
+    .profile;
+    let quads = lift("# Top\n\n* * *", &doc("rule.md"), &profile);
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?line ?end WHERE { ?b a md:ThematicBreak ; md:line ?line ; md:endLine ?end }"
+        ),
+        vec![row(&["3", "3"])]
+    );
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?class WHERE { ?m a md:Match ; md:block [ a ?class ] }"
+        ),
+        vec![row(&["https://ikigai-rs.dev/ns/md#ThematicBreak"])]
+    );
+}
+
+#[test]
+fn frontmatter_aliases_do_not_shift_following_fields() {
+    let quads = lift(
+        "---\na: &value first\nb: *value\nc: third\n---\n",
+        &doc("alias.md"),
+        &Profile::default(),
+    );
+    assert_eq!(ask(&quads,
+        "SELECT ?key ?value WHERE { ?f a md:Field ; md:key ?key ; md:value ?value } ORDER BY ?key"),
+        vec![row(&["a", "first"]), row(&["b", "first"]), row(&["c", "third"])]);
+}
+
+#[test]
+fn repeated_mapping_triples_are_one_rdf_statement() {
+    let once = r#"@prefix md: <https://ikigai-rs.dev/ns/md#> .
+        <#m> a md:Mapping ; md:split <#s> ; md:citation <#c> ;
+             md:construct "CONSTRUCT { <urn:s> <urn:p> <urn:o> } WHERE {}" .
+        <#s> md:key "tags" .
+        <#c> md:name "ticket" ; md:pattern "T-[0-9]+" ."#;
+    let expected = Mapping::parse(once, "urn:test:m").unwrap();
+    let repeated = Mapping::parse(&format!("{once}\n{once}"), "urn:test:m").unwrap();
+    assert_eq!(repeated.profile.splits.len(), expected.profile.splits.len());
+    assert_eq!(
+        repeated.profile.citations.len(),
+        expected.profile.citations.len()
+    );
+    assert_eq!(repeated.constructs, expected.constructs);
+}
+
+#[test]
+fn collection_aliases_are_reported_without_partial_fields() {
+    for yaml in [
+        "a: &value [one, two]\nb: *value\nc: third\n",
+        "a: &value {nested: one}\nb: *value\nc: third\n",
+        "a: &value [*value]\n",
+    ] {
+        let quads = lift(
+            &format!("---\n{yaml}---\n\n# Still here"),
+            &doc("alias.md"),
+            &Profile::default(),
+        );
+        let errors = ask(&quads, "SELECT ?err WHERE { ?d md:frontmatterError ?err }");
+        assert_eq!(errors.len(), 1, "{yaml}");
+        assert!(errors[0][0].contains("collection aliases are not supported"));
+        assert!(ask(&quads, "SELECT ?f WHERE { ?f a md:Field }").is_empty());
+        assert_eq!(
+            ask(&quads, "SELECT ?t WHERE { ?h a md:Heading ; md:text ?t }"),
+            vec![row(&["Still here"])]
+        );
+    }
+}
+
+#[test]
+fn parser_boundaries_keep_nested_content_with_either_line_ending() {
+    let text = "# Top\n\n- own **bold and *nested*** [label](https://example.org/a_(b))\n\n  ```text\n  code | with spaces  \n  ```\n\n  ## Inside\n\n| cell | image |\n| --- | --- |\n| a\\|b | ![alt *text*](https://example.org/image_(1).png) |";
+    for ending in ["\n", "\r\n"] {
+        for trailing in ["", ending] {
+            let input = format!("{}{trailing}", text.replace('\n', ending));
+            let quads = lift(&input, &doc("edges.md"), &Profile::default());
+            assert_eq!(
+                ask(
+                    &quads,
+                    "SELECT ?text WHERE { ?i a md:ListItem ; md:text ?text }"
+                ),
+                vec![row(&["own bold and nested label"])]
+            );
+            assert_eq!(ask(&quads,
+                "SELECT ?text WHERE { ?c a md:CodeBlock ; md:text ?text ; md:parent [ a md:ListItem ] }"),
+                vec![row(&["code | with spaces  \n"])]);
+            assert_eq!(ask(&quads,
+                "SELECT ?text WHERE { ?h a md:Heading ; md:text ?text ; md:parent [ a md:ListItem ] }"),
+                vec![row(&["Inside"])]);
+            assert_eq!(
+                ask(
+                    &quads,
+                    "SELECT ?href ?text WHERE { ?l a md:Link ; md:href ?href ; md:text ?text }"
+                ),
+                vec![row(&["https://example.org/a_(b)", "label"])]
+            );
+            assert_eq!(ask(&quads,
+                "SELECT ?text WHERE { ?c a md:TableCell ; md:text ?text . ?c md:parent [ md:header false ] } ORDER BY ?text"),
+                vec![row(&["alt text"]), row(&["a|b"])]);
+            assert_eq!(
+                ask(
+                    &quads,
+                    "SELECT ?href ?text WHERE { ?i a md:Image ; md:href ?href ; md:text ?text }"
+                ),
+                vec![row(&["https://example.org/image_(1).png", "alt text"])]
+            );
+        }
+    }
+}
+
+#[test]
+fn served_graph_formats_round_trip_exact_literals() {
+    use oxigraph::io::{RdfFormat, RdfParser};
+    use std::collections::HashSet;
+
+    let code = "\t雪 e\u{301} \"quoted\" \\path\t  \n\nlast\n";
+    let quads = lift(
+        &format!("```text\n{code}```"),
+        &doc("literals.md"),
+        &Profile::default(),
+    );
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?text WHERE { ?c a md:CodeBlock ; md:text ?text }"
+        ),
+        vec![row(&[code])]
+    );
+    let expected: HashSet<_> = quads.iter().cloned().collect();
+    for (trig, format) in [(false, RdfFormat::NQuads), (true, RdfFormat::TriG)] {
+        let bytes = ikigai_markdown::serialize(&quads, trig).unwrap();
+        let parsed: HashSet<_> = RdfParser::from_format(format)
+            .for_slice(&bytes)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(parsed, expected);
+    }
+}
+
+#[test]
+fn scalar_aliases_keep_lexical_text_and_the_alias_line() {
+    let quads = lift(
+        "---\na: &value 0002\nb: *value\nlist: [*value, *value]\n---",
+        &doc("alias.md"),
+        &Profile::default(),
+    );
+    assert_eq!(ask(&quads,
+        "SELECT ?key ?value ?line WHERE { ?f a md:Field ; md:key ?key ; md:value ?value ; md:line ?line } ORDER BY ?key"),
+        vec![row(&["a", "0002", "2"]), row(&["b", "0002", "3"])]);
+    assert_eq!(ask(&quads,
+        "SELECT ?text ?index WHERE { ?f md:key 'list' ; md:token ?t . ?t md:text ?text ; md:index ?index } ORDER BY ?index"),
+        vec![row(&["0002", "1"]), row(&["0002", "2"])]);
+}
