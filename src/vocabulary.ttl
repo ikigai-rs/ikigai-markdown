@@ -85,9 +85,13 @@ md:raw a rdf:Property ; rdfs:label "raw" ; rdfs:range xsd:string ;
     rdfs:comment "The markdown source of a block's own inline content." .
 md:level a rdf:Property ; rdfs:label "level" ; rdfs:domain md:Heading ; rdfs:range xsd:integer .
 md:ordered a rdf:Property ; rdfs:label "ordered" ; rdfs:domain md:List ; rdfs:range xsd:boolean .
+md:start a rdf:Property ; rdfs:label "start number" ; rdfs:domain md:List ; rdfs:range xsd:integer ;
+    rdfs:comment "The first item's number in an ordered list; absent for an unordered list." .
 md:checked a rdf:Property ; rdfs:label "checked" ; rdfs:domain md:ListItem ; rdfs:range xsd:boolean .
 md:header a rdf:Property ; rdfs:label "header" ; rdfs:domain md:TableRow ; rdfs:range xsd:boolean .
 md:column a rdf:Property ; rdfs:label "column" ; rdfs:domain md:TableCell ; rdfs:range xsd:integer .
+md:alignment a rdf:Property ; rdfs:label "column alignment" ; rdfs:domain md:TableCell ; rdfs:range xsd:string ;
+    rdfs:comment "The column's alignment: none, left, center, or right, on every header and body cell." .
 md:fenced a rdf:Property ; rdfs:label "fenced" ; rdfs:domain md:CodeBlock ; rdfs:range xsd:boolean .
 md:info a rdf:Property ; rdfs:label "info string" ; rdfs:domain md:CodeBlock ; rdfs:range xsd:string .
 md:href a rdf:Property ; rdfs:label "href" ; rdfs:range xsd:string .

@@ -51,6 +51,13 @@ Frontmatter keeps scalar text without inferring types, including scalar aliases
 `md:frontmatterError` asking you to write the collection at each use. No partial
 fields are emitted on a frontmatter error; the remaining Markdown still lifts.
 
+Ordered lists retain their first number as `md:start` (unordered lists have none).
+Every table cell carries its column's `md:alignment`: `none`, `left`, `center`, or
+`right`, including header cells. Line counts and locations recognize LF, CRLF, and
+lone CR line endings. As defined by the vocabulary, inline `md:text` collapses
+whitespace, including link labels and image descriptions; it is not a byte-for-byte
+copy of the source.
+
 Structural node IRIs use document order (`#b1`, `#b2`, and so on). Identical input
 produces identical IRIs and no blank nodes, but inserting an earlier block can
 renumber later nodes. Mappings that need identities across edits should mint domain

@@ -17,10 +17,11 @@
 //!   md:line ; md:order`. Nested keys are dot-joined; a YAML sequence and a profile
 //!   split both become `md:token` nodes (`md:text`, `md:index`). Values are the text
 //!   the author wrote — `0002` stays `0002`; typing is the mapping's job.
-//! - blocks: `md:Heading` (`md:level`), `md:Paragraph`, `md:List` (`md:ordered`),
+//! - blocks: `md:Heading` (`md:level`), `md:Paragraph`, `md:List` (`md:ordered`,
+//!   `md:start` for ordered lists),
 //!   `md:ListItem` (`md:checked`?), `md:BlockQuote`, `md:CodeBlock` (`md:info`),
 //!   `md:HtmlBlock`, `md:Table`, `md:TableRow` (`md:header`), `md:TableCell`
-//!   (`md:column`), `md:ThematicBreak`. Every block: `md:document`, `md:order`
+//!   (`md:column`, `md:alignment`), `md:ThematicBreak`. Every block: `md:document`, `md:order`
 //!   (document order), `md:line`, `md:endLine`, `md:parent` (its container, or `D`),
 //!   `md:section` (the nearest heading above it; a heading's is its parent heading).
 //!   Text-bearing blocks carry `md:text` (plain inline text) and `md:raw` (the
@@ -34,7 +35,7 @@
 use std::collections::HashMap;
 
 use oxigraph::model::{GraphName, Literal, NamedNode, NamedOrBlankNode, Quad, Term};
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use yaml_rust2::parser::{Event as YamlEvent, MarkedEventReceiver, Parser as YamlParser};
 use yaml_rust2::scanner::{Marker, ScanError};
 
@@ -154,7 +155,26 @@ struct LineIndex {
 impl LineIndex {
     fn new(text: &str) -> Self {
         let mut starts = vec![0];
-        starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+        // CommonMark accepts LF, CRLF, and lone CR as line endings. Count
+        // CRLF once, while retaining byte offsets into the original source.
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\r' => {
+                    i += 1;
+                    if bytes.get(i) == Some(&b'\n') {
+                        i += 1;
+                    }
+                    starts.push(i);
+                }
+                b'\n' => {
+                    i += 1;
+                    starts.push(i);
+                }
+                _ => i += 1,
+            }
+        }
         // A trailing newline does not start a line.
         if starts.len() > 1 && *starts.last().unwrap() == text.len() {
             starts.pop();
@@ -237,6 +257,8 @@ struct Frame {
     run: Option<(usize, usize)>,
     /// For a table row: the next cell's column.
     next_column: i64,
+    /// For a table: the alignment of each column, shared by all its rows.
+    alignments: Vec<Alignment>,
 }
 
 impl Frame {
@@ -340,7 +362,12 @@ fn structure(
                         });
                     }
                     match &tag {
-                        Tag::List(start) => out.bool(node.clone(), "ordered", start.is_some()),
+                        Tag::List(start) => {
+                            out.bool(node.clone(), "ordered", start.is_some());
+                            if let Some(start) = start {
+                                out.int(node.clone(), "start", *start as i64);
+                            }
+                        }
                         Tag::TableHead => out.bool(node.clone(), "header", true),
                         Tag::TableRow => out.bool(node.clone(), "header", false),
                         Tag::CodeBlock(CodeBlockKind::Fenced(info)) => {
@@ -354,8 +381,26 @@ fn structure(
                         }
                         Tag::TableCell => {
                             if let Some(row) = stack.last_mut() {
-                                out.int(node.clone(), "column", row.next_column);
+                                let column = row.next_column;
+                                out.int(node.clone(), "column", column);
                                 row.next_column += 1;
+                                if let Some(alignment) = stack
+                                    .iter()
+                                    .rev()
+                                    .find(|f| f.kind == Kind::Table)
+                                    .and_then(|f| f.alignments.get(column as usize))
+                                {
+                                    out.text(
+                                        node.clone(),
+                                        "alignment",
+                                        match alignment {
+                                            Alignment::None => "none",
+                                            Alignment::Left => "left",
+                                            Alignment::Center => "center",
+                                            Alignment::Right => "right",
+                                        },
+                                    );
+                                }
                             }
                         }
                         _ => {}
@@ -368,6 +413,10 @@ fn structure(
                         raw: Vec::new(),
                         run: None,
                         next_column: 0,
+                        alignments: match &tag {
+                            Tag::Table(alignments) => alignments.clone(),
+                            _ => Vec::new(),
+                        },
                     });
                 } else {
                     let link = match tag {
@@ -414,7 +463,7 @@ fn structure(
                         out.add(link.node.clone(), RDF_TYPE, md(link.class));
                         out.rel(link.node.clone(), "document", doc.iri.clone());
                         out.text(link.node.clone(), "href", &link.href);
-                        out.text(link.node.clone(), "text", link.text.trim());
+                        out.text(link.node.clone(), "text", &collapse(&link.text));
                         if let Some(block) =
                             stack.iter().rev().find(|f| f.kind != Kind::Frontmatter)
                         {

@@ -724,3 +724,102 @@ fn scalar_aliases_keep_lexical_text_and_the_alias_line() {
         "SELECT ?text ?index WHERE { ?f md:key 'list' ; md:token ?t . ?t md:text ?text ; md:index ?index } ORDER BY ?index"),
         vec![row(&["0002", "1"]), row(&["0002", "2"])]);
 }
+
+#[test]
+fn commonmark_line_endings_have_the_same_locations() {
+    let profile = Profile {
+        citations: vec![ikigai_markdown::Citation {
+            name: "marker".into(),
+            pattern: regex::Regex::new("MARK").unwrap(),
+        }],
+        ..Profile::default()
+    };
+    for ending in ["\n", "\r\n", "\r"] {
+        for trailing in ["", ending] {
+            let input = format!(
+                "{}{trailing}",
+                "# Heading\n\nParagraph MARK\ncontinued".replace('\n', ending)
+            );
+            let quads = lift(&input, &doc("lines.md"), &profile);
+            assert_eq!(
+                ask(
+                    &quads,
+                    "SELECT ?count WHERE { ?d a md:Document ; md:lineCount ?count }"
+                ),
+                vec![row(&["4"])],
+                "{ending:?}, {trailing:?}"
+            );
+            assert_eq!(ask(&quads,
+                "SELECT ?line ?end WHERE { ?p a md:Paragraph ; md:line ?line ; md:endLine ?end }"),
+                vec![row(&["3", "4"])], "{ending:?}, {trailing:?}");
+            assert_eq!(
+                ask(
+                    &quads,
+                    "SELECT ?line WHERE { ?m a md:Match ; md:line ?line }"
+                ),
+                vec![row(&["3"])],
+                "{ending:?}, {trailing:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn link_and_image_text_follow_the_inline_whitespace_contract() {
+    let quads = lift(
+        "[a  b\tc\nd](https://example.org) ![e  f\tg\nh](https://example.org/image)",
+        &doc("labels.md"),
+        &Profile::default(),
+    );
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?text WHERE { ?l a md:Link ; md:text ?text }"
+        ),
+        vec![row(&["a b c d"])]
+    );
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?text WHERE { ?i a md:Image ; md:text ?text }"
+        ),
+        vec![row(&["e f g h"])]
+    );
+}
+
+#[test]
+fn ordered_lists_preserve_their_start_number() {
+    let quads = lift(
+        "7. seven\n8. eight\n\n- bullet\n",
+        &doc("starts.md"),
+        &Profile::default(),
+    );
+    assert_eq!(ask(&quads,
+        "SELECT ?ordered ?start WHERE { ?l a md:List ; md:ordered ?ordered ; md:order ?order . OPTIONAL { ?l md:start ?start } } ORDER BY ?order"),
+        vec![row(&["true", "7"]), row(&["false", ""])]);
+}
+
+#[test]
+fn table_cells_preserve_column_alignment() {
+    let quads = lift(
+        "| plain | left | center | right |\n| --- | :--- | :---: | ---: |\n| a | b | c | d |\n",
+        &doc("alignment.md"),
+        &Profile::default(),
+    );
+    assert_eq!(ask(&quads,
+        "SELECT ?text ?alignment WHERE { ?c a md:TableCell ; md:text ?text ; md:order ?order . OPTIONAL { ?c md:alignment ?alignment } } ORDER BY ?order"),
+        vec![row(&["plain", "none"]), row(&["left", "left"]), row(&["center", "center"]), row(&["right", "right"]), row(&["a", "none"]), row(&["b", "left"]), row(&["c", "center"]), row(&["d", "right"])]);
+}
+
+#[test]
+fn a_reused_anchor_resolves_to_its_latest_definition() {
+    let quads = lift(
+        "---\na: &value first\nb: &value [second]\nc: *value\n---\n",
+        &doc("reused-anchor.md"),
+        &Profile::default(),
+    );
+    let errors = ask(&quads, "SELECT ?err WHERE { ?d md:frontmatterError ?err }");
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0][0].contains("collection aliases are not supported"));
+    assert!(ask(&quads, "SELECT ?f WHERE { ?f a md:Field }").is_empty());
+}
