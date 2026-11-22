@@ -265,6 +265,11 @@ impl Frame {
     fn flush_run(&mut self) {
         if let Some(run) = self.run.take() {
             self.raw.push(run);
+            // Tight lists omit paragraph wrappers. A block can interrupt the
+            // item's inline content without producing a break event.
+            if self.kind == Kind::ListItem {
+                self.text.push(' ');
+            }
         }
     }
 }

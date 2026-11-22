@@ -823,3 +823,46 @@ fn a_reused_anchor_resolves_to_its_latest_definition() {
     assert!(errors[0][0].contains("collection aliases are not supported"));
     assert!(ask(&quads, "SELECT ?f WHERE { ?f a md:Field }").is_empty());
 }
+
+#[test]
+fn tight_list_item_separates_inline_runs_around_a_code_block() {
+    let quads = lift(
+        "- before\n  ```text\n  # code\n  ```\n  after\n",
+        &doc("tight.md"),
+        &Profile::default(),
+    );
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?text ?raw WHERE { ?i a md:ListItem ; md:text ?text ; md:raw ?raw }"
+        ),
+        vec![row(&["before after", "before\nafter"])]
+    );
+}
+
+#[test]
+fn mapping_constructs_return_a_set_union() {
+    let d = doc("union.md");
+    let structural = lift("# Sample\n", &d, &Profile::default());
+    let constructs = [
+        "CONSTRUCT { ?s <urn:test:label> ?label } WHERE { ?s <https://ikigai-rs.dev/ns/md#text> ?label }".into(),
+        "CONSTRUCT { ?s <urn:test:label> \"Sample\" } WHERE { ?s <https://ikigai-rs.dev/ns/md#level> 1 }".into(),
+    ];
+    let quads = ikigai_markdown::apply(&structural, &d.iri, &constructs).unwrap();
+    assert_eq!(quads.len(), 1, "{quads:?}");
+}
+
+#[test]
+#[ignore = "Mapping evaluation does not yet enforce deterministic SPARQL"]
+fn mapped_graph_is_repeatable_with_the_same_inputs() {
+    let d = doc("repeat.md");
+    let structural = lift("# Sample\n", &d, &Profile::default());
+    let constructs = ["CONSTRUCT { ?s <urn:test:identifier> ?id } WHERE {
+            ?s <https://ikigai-rs.dev/ns/md#level> 1 .
+            BIND(UUID() AS ?id)
+        }"
+    .into()];
+    let first = ikigai_markdown::apply(&structural, &d.iri, &constructs);
+    let second = ikigai_markdown::apply(&structural, &d.iri, &constructs);
+    assert_eq!(first, second);
+}
