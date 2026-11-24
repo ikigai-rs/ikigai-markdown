@@ -1,5 +1,7 @@
 //! Stage 2: run a mapping's CONSTRUCTs over one document's structural graph.
 
+use std::collections::HashSet;
+
 use oxigraph::io::{RdfFormat, RdfSerializer};
 use oxigraph::model::{GraphName, NamedNode, NamedOrBlankNode, Quad, Term};
 use oxigraph::store::Store;
@@ -52,6 +54,7 @@ pub(crate) fn apply_checked(
             .map_err(store_error)?;
     }
     let mut out = Vec::new();
+    let mut seen = HashSet::new();
     for (i, text) in constructs.iter().enumerate() {
         let what = format!("construct {}", i + 1);
         let Some(triples) = crate::sparql::construct(text, &store, &what, allowance)? else {
@@ -71,12 +74,15 @@ pub(crate) fn apply_checked(
                     "{what} emitted a blank-node object; build IRIs with IRI(CONCAT(…))"
                 )));
             }
-            out.push(Quad::new(
+            let quad = Quad::new(
                 subject,
                 t.predicate,
                 t.object,
                 GraphName::NamedNode(graph.clone()),
-            ));
+            );
+            if seen.insert(quad.clone()) {
+                out.push(quad);
+            }
         }
     }
     Ok(out)
