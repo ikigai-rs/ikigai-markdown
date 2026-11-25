@@ -257,15 +257,15 @@ struct LiftEndpoint {
 impl Endpoint for LiftEndpoint {
     async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
         // The document: `src` as a reference or by value, else `content` by value.
-        let (markdown, source) = match inv.inline_str("src") {
-            Ok(src) if is_reference(src) => {
+        let (markdown, source) = match inv.optional_str("src")? {
+            Some(src) if is_reference(src) => {
                 let iri = parse_iri("src", src)?;
                 (text(inv.source(&iri).await?, "src")?, Some(src.to_string()))
             }
-            Ok(src) => (src.to_string(), None),
-            Err(_) => match inv.inline_str("content") {
-                Ok(content) => (content.to_string(), None),
-                Err(_) => {
+            Some(src) => (src.to_string(), None),
+            None => match inv.optional_str("content")? {
+                Some(content) => (content.to_string(), None),
+                None => {
                     return Err(Error::InvalidArgument {
                         name: "src".to_string(),
                         detail: "urn:markdown:lift needs `src` (a resource IRI or the markdown \
@@ -277,9 +277,9 @@ impl Endpoint for LiftEndpoint {
         };
 
         // The mapping: optional; a reference or Turtle by value.
-        let mapping_text = match inv.inline_str("mapping") {
-            Err(_) => None,
-            Ok(m) => Some(mapping_text(inv, m).await?),
+        let mapping_text = match inv.optional_str("mapping")? {
+            None => None,
+            Some(m) => Some(mapping_text(inv, m).await?),
         };
 
         // The caller's time budget, for every construct of this lift together (ledger
@@ -294,10 +294,10 @@ impl Endpoint for LiftEndpoint {
             Some((turtle, base)) => Mapping::parse_checked(&turtle, &base, &allowance)?,
         };
 
-        let trig = match inv.inline_str("as").map(str::trim) {
-            Err(_) | Ok(NQUADS) => false,
-            Ok(TRIG) => true,
-            Ok(other) => {
+        let trig = match inv.optional_str("as")?.map(str::trim) {
+            None | Some(NQUADS) => false,
+            Some(TRIG) => true,
+            Some(other) => {
                 return Err(Error::InvalidArgument {
                     name: "as".to_string(),
                     detail: format!("expected {NQUADS} or {TRIG}, got {other:?}"),
@@ -305,7 +305,7 @@ impl Endpoint for LiftEndpoint {
             }
         };
 
-        let doc = doc_ref(inv.inline_str("path").ok(), source.as_deref())?;
+        let doc = doc_ref(inv.optional_str("path")?, source.as_deref())?;
         let mut quads = lift(&markdown, &doc, &mapping.profile);
         let domain = map::apply_checked(&quads, &doc.iri, &mapping.constructs, &allowance)?;
         quads.extend(domain);
@@ -482,5 +482,76 @@ mod tests {
         assert_eq!(d.iri.as_str(), "urn:file:x.md");
         let d = doc_ref(None, None).unwrap();
         assert_eq!(d.iri.as_str(), "urn:markdown:doc:anonymous");
+    }
+}
+
+#[cfg(test)]
+mod optional_argument_tests {
+    use super::*;
+    use ikigai_core::{ArgRef, Bindings, Capability, ContentId, Request};
+
+    #[test]
+    fn unreadable_optional_arguments_are_refused_when_they_reach_the_endpoint() {
+        let lift = LiftEndpoint {
+            budget: EvaluationBudget::default(),
+        };
+        let snapshot = corpus::SnapshotEndpoint {
+            budget: EvaluationBudget::default(),
+        };
+        let mapping = corpus::LintMappingEndpoint;
+        let expects = corpus::LintExpectsEndpoint;
+        let corpus = corpus::LintCorpusEndpoint;
+        let cases: [(&dyn Endpoint, &str); 13] = [
+            (&lift, "src"),
+            (&lift, "content"),
+            (&lift, "mapping"),
+            (&lift, "as"),
+            (&lift, "path"),
+            (&snapshot, "root"),
+            (&snapshot, "mapping"),
+            (&mapping, "as"),
+            (&expects, "as"),
+            (&corpus, "as"),
+            (&corpus, "root"),
+            (&corpus, "ignore"),
+            (&corpus, "baseline"),
+        ];
+        for (endpoint, name) in cases {
+            for arg in [
+                ArgRef::Reference(Iri::parse("urn:test:ref").unwrap()),
+                ArgRef::Content(ContentId::of(b"body")),
+            ] {
+                let mut request =
+                    Request::new(Verb::Source, Iri::parse("urn:test:endpoint").unwrap())
+                        .with_arg("docs", ArgRef::Inline(b"urn:test:doc".to_vec()))
+                        .with_arg(
+                            "mapping",
+                            ArgRef::Inline(
+                                include_bytes!("../mappings/example/mapping.ttl").to_vec(),
+                            ),
+                        );
+                if name != "src" && name != "content" {
+                    request = request.with_arg("src", ArgRef::Inline(b"# Hi".to_vec()));
+                }
+                request = request.with_arg(name, arg);
+                let bindings = Bindings::new();
+                let capability = Capability::root();
+                let inv = Invocation::detached(&request, &bindings, &capability);
+                let result = futures::executor::block_on(endpoint.invoke(&inv));
+                match result {
+                    Err(Error::InvalidArgument {
+                        name: actual,
+                        detail,
+                    }) => {
+                        assert_eq!(actual, name, "{}", endpoint.name());
+                        assert!(detail.contains("inline"), "{detail}");
+                    }
+                    other => panic!(
+                        "{} {name}: expected refusal, got {other:?}",
+                        endpoint.name()
+                    ),
+                }
+            }
+        }
     }
 }

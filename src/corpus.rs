@@ -118,10 +118,10 @@ fn document_list(text: &str) -> Result<Vec<Iri>> {
 
 /// The output face a lint endpoint was asked for: `true` for Turtle.
 fn turtle_face(inv: &Invocation<'_>) -> Result<bool> {
-    match inv.inline_str("as").map(str::trim) {
-        Err(_) | Ok(TEXT) => Ok(false),
-        Ok(TURTLE) => Ok(true),
-        Ok(other) => Err(invalid(
+    match inv.optional_str("as")?.map(str::trim) {
+        None | Some(TEXT) => Ok(false),
+        Some(TURTLE) => Ok(true),
+        Some(other) => Err(invalid(
             "as",
             format!("expected {TEXT} or {TURTLE}, got {other:?}"),
         )),
@@ -358,8 +358,8 @@ impl Endpoint for SnapshotEndpoint {
         let docs = inv
             .inline_str("docs")
             .map_err(|_| invalid("docs", "list the documents: one resource IRI per line"))?;
-        let root = inv.inline_str("root").ok();
-        let mapping = inv.inline_str("mapping").ok();
+        let root = inv.optional_str("root")?;
+        let mapping = inv.optional_str("mapping")?;
         let bytes = self.lift(inv, docs, root, mapping).await?;
         Ok(Representation::new(ReprType::new(NQUADS), bytes).cacheable())
     }
@@ -477,11 +477,13 @@ impl Endpoint for LintCorpusEndpoint {
             .inline_str("mapping")
             .map_err(|_| invalid("mapping", "name the mapping the documents are lifted under"))?;
         let (mapping_text, base) = mapping(inv).await?;
-        let root = inv.inline_str("root").ok();
+        let root = inv.optional_str("root")?;
         let ignore: Vec<String> = inv
-            .inline_str("ignore")
+            .optional_str("ignore")?
             .map(|s| s.split_whitespace().map(str::to_string).collect())
             .unwrap_or_default();
+
+        let baseline_arg = inv.optional_str("baseline")?;
 
         let header = |report: &mut Report, baseline: &str| {
             report
@@ -546,13 +548,13 @@ impl Endpoint for LintCorpusEndpoint {
             Err(e) => return Err(e),
         };
 
-        let (baseline, baseline_label) = match inv.inline_str("baseline") {
-            Err(_) => (None, "none".to_string()),
-            Ok(b) if crate::is_reference(b) => {
+        let (baseline, baseline_label) = match baseline_arg {
+            None => (None, "none".to_string()),
+            Some(b) if crate::is_reference(b) => {
                 let iri = crate::parse_iri("baseline", b)?;
                 (Some(inv.source(&iri).await?.bytes), b.to_string())
             }
-            Ok(b) => (Some(b.as_bytes().to_vec()), "given by value".to_string()),
+            Some(b) => (Some(b.as_bytes().to_vec()), "given by value".to_string()),
         };
         if let Some(b) = &baseline {
             if b.len() > MAX_SNAPSHOT_BYTES {
