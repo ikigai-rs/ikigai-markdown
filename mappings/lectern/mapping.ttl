@@ -1,0 +1,548 @@
+# The lectern dialect: Lectern Markdown, the slide format of lectern-slides
+# (https://github.com/bsletten/lectern-slides), plus the course directives shared with
+# the mdbook mapping (README, "Course directives"). A mapping file only: nothing in the
+# lifter knows any of these words.
+#
+# Install it by name: copy this directory to
+#   <config home>/markdown/mappings/lectern/
+# and lift each deck file with  mapping=urn:markdown:mapping:lectern
+#
+# What it lifts, from one deck file (one document):
+#
+#   - The deck, and its slides as lectern's splitter separates them: a line that is
+#     `---` once stripped, outside a fenced code block, ends a slide. Slides are numbered
+#     from 1 within the file, empty ones included, exactly as an include's `#1-3,14`
+#     counts them, so `urn:lectern:slide:path:{path}:number:{n}` is the slide that
+#     range names.
+#   - Speaker notes (`<!-- notes -->`) and presenter notes (`<!-- notes:presenter -->`),
+#     each closed by `<!-- /notes -->` or by the end of its slide, with the blocks they
+#     hold. Any other category is an ordinary speaker note, as lectern treats it.
+#   - Includes of shared partials, `<!-- include: path -->` and
+#     `<!-- include: path#1-3,14 -->`, with each part of the range list.
+#   - Questions and exercise references (`<!-- question … -->`, `<!-- exercise … -->`),
+#     on the slide they sit on.
+#
+# Every IRI is built from the deck's path and a count, or from a directive's own keys;
+# no blank node, nothing random.
+#
+# Every regex is written without backslashes: a backslash inside a SPARQL string inside a
+# Turtle string has to be written four times over. In the profile's patterns (Rust regex,
+# read by Turtle once), `\t` is a tab Turtle writes into the pattern.
+
+@prefix md:    <https://ikigai-rs.dev/ns/md#> .
+@prefix lt:    <https://ikigai-rs.dev/ns/lectern#> .
+@prefix learn: <https://ikigai-rs.dev/ns/learn#> .
+@prefix sh:    <http://www.w3.org/ns/shacl#> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+
+<urn:markdown:mapping:lectern:mapping> a md:Mapping ;
+
+    # --- the lift profile ----------------------------------------------------------
+    # The separator: a `---` line. CommonMark makes it a thematic break, or (straight
+    # after a paragraph line) a setext underline; inside a fenced code block it is code.
+    # A match records the line and the block it falls in, and the constructs drop the
+    # ones in fenced code, which is what makes the split fence-aware. A match in no block
+    # is a frontmatter delimiter, unless a thematic break is on its line (an indented
+    # `---` starts before the break's own extent does).
+    md:citation <urn:markdown:mapping:lectern:citation:separator> ,
+                <urn:markdown:mapping:lectern:citation:note-open> ,
+                <urn:markdown:mapping:lectern:citation:note-close> ,
+                <urn:markdown:mapping:lectern:citation:include> ,
+                <urn:markdown:mapping:lectern:citation:field> ;
+
+    md:shape <urn:markdown:mapping:lectern:shape:deck> ,
+             <urn:markdown:mapping:lectern:shape:slide> ,
+             <urn:markdown:mapping:lectern:shape:note> ,
+             <urn:markdown:mapping:lectern:shape:include> ,
+             <urn:markdown:mapping:lectern:shape:range> ,
+             <urn:markdown:mapping:lectern:shape:question> ,
+             <urn:markdown:mapping:lectern:shape:choice> ,
+             <urn:markdown:mapping:lectern:shape:exercise> ,
+             <urn:markdown:mapping:lectern:shape:unit> ;
+
+    # --- the constructs --------------------------------------------------------------
+    # A slide's number is 1 plus the separators above its first line. Every construct
+    # below that places something on a slide counts the same way.
+
+    # 1. The deck and its slides: slide 1, and one more after every separator.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX lt: <https://ikigai-rs.dev/ns/lectern#>
+CONSTRUCT {
+  ?deck a lt:Deck ; lt:path ?path ; lt:slide ?slide .
+  ?slide a lt:Slide ; lt:deck ?deck ; lt:number ?n .
+}
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  BIND(ENCODE_FOR_URI(?path) AS ?key)
+  BIND(IRI(CONCAT("urn:lectern:deck:path:", ?key)) AS ?deck)
+  {
+    BIND(1 AS ?n)
+  } UNION {
+    SELECT ?sl (COUNT(DISTINCT ?other) + 1 AS ?n) WHERE {
+      ?sm a md:Match ; md:matchedBy "separator" ; md:line ?sl .
+      FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+      FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?sl } }
+      ?om a md:Match ; md:matchedBy "separator" ; md:line ?other .
+      FILTER NOT EXISTS { ?om md:block ?ob . ?ob md:fenced true }
+      FILTER EXISTS { { ?om md:block ?obIn } UNION { ?obRule a md:ThematicBreak ; md:line ?other } }
+      FILTER(?other <= ?sl)
+    } GROUP BY ?sl
+  }
+  BIND(IRI(CONCAT("urn:lectern:slide:path:", ?key, ":number:", STR(?n))) AS ?slide)
+}
+""" ;
+
+    # 2. Each top-level block on its slide; a separator's own thematic break is on none.
+    #    A slide's title is its first heading.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX lt: <https://ikigai-rs.dev/ns/lectern#>
+CONSTRUCT { ?slide lt:block ?b ; lt:title ?title . }
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  {
+    SELECT ?b ?l (COUNT(DISTINCT ?sl) + 1 AS ?n) WHERE {
+      ?b md:parent ?top ; md:line ?l .
+      ?top a md:Document .
+      FILTER NOT EXISTS {
+        ?b a md:ThematicBreak .
+        ?bm a md:Match ; md:matchedBy "separator" ; md:line ?l .
+      }
+      OPTIONAL {
+        ?sm a md:Match ; md:matchedBy "separator" ; md:line ?sl .
+        FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+        FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?sl } }
+        FILTER(?sl < ?l)
+      }
+    } GROUP BY ?b ?l
+  }
+  BIND(IRI(CONCAT("urn:lectern:slide:path:", ENCODE_FOR_URI(?path), ":number:", STR(?n))) AS ?slide)
+  OPTIONAL {
+    ?b a md:Heading ; md:text ?title .
+    FILTER NOT EXISTS {
+      ?earlier a md:Heading ; md:parent ?doc ; md:line ?el .
+      FILTER(?el < ?l)
+      FILTER NOT EXISTS {
+        ?between a md:Match ; md:matchedBy "separator" ; md:line ?bl .
+        FILTER NOT EXISTS { ?between md:block ?bb . ?bb md:fenced true }
+        FILTER EXISTS { { ?between md:block ?bbIn } UNION { ?bbRule a md:ThematicBreak ; md:line ?bl } }
+        FILTER(?bl > ?el && ?bl < ?l)
+      }
+    }
+  }
+}
+""" ;
+
+    # 3. Notes: one per opening comment in an HTML block, numbered within its slide,
+    #    ending at its closing comment or at the slide's end, whichever comes first.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX lt: <https://ikigai-rs.dev/ns/lectern#>
+CONSTRUCT {
+  ?slide lt:note ?note .
+  ?note a lt:Note ; lt:slide ?slide ; lt:index ?k ; lt:kind ?kind ; lt:block ?b .
+}
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  {
+    SELECT ?ol ?category (COUNT(DISTINCT ?sl) + 1 AS ?n) WHERE {
+      ?om a md:Match ; md:matchedBy "note-open" ; md:line ?ol ; md:value ?category ; md:block ?ob .
+      ?ob a md:HtmlBlock .
+      OPTIONAL {
+        ?sm a md:Match ; md:matchedBy "separator" ; md:line ?sl .
+        FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+        FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?sl } }
+        FILTER(?sl < ?ol)
+      }
+    } GROUP BY ?ol ?category
+  }
+  {
+    SELECT ?ol (COUNT(DISTINCT ?pl) AS ?k) WHERE {
+      ?om a md:Match ; md:matchedBy "note-open" ; md:line ?ol ; md:block ?ob .
+      ?ob a md:HtmlBlock .
+      ?pm a md:Match ; md:matchedBy "note-open" ; md:line ?pl ; md:block ?pb .
+      ?pb a md:HtmlBlock .
+      FILTER(?pl <= ?ol)
+      FILTER NOT EXISTS {
+        ?sm a md:Match ; md:matchedBy "separator" ; md:line ?sl .
+        FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+        FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?sl } }
+        FILTER(?sl > ?pl && ?sl < ?ol)
+      }
+    } GROUP BY ?ol
+  }
+  {
+    SELECT ?ol (MIN(?candidate) AS ?end) WHERE {
+      ?om a md:Match ; md:matchedBy "note-open" ; md:line ?ol ; md:block ?ob .
+      ?ob a md:HtmlBlock .
+      {
+        ?d md:lineCount ?count .
+        BIND(?count + 1 AS ?candidate)
+      } UNION {
+        ?cm a md:Match ; md:matchedBy "note-close" ; md:line ?candidate ; md:block ?cb .
+        ?cb a md:HtmlBlock .
+      } UNION {
+        ?sm a md:Match ; md:matchedBy "separator" ; md:line ?candidate .
+        FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+        FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?candidate } }
+      }
+      FILTER(?candidate > ?ol)
+    } GROUP BY ?ol
+  }
+  BIND(ENCODE_FOR_URI(?path) AS ?key)
+  BIND(IRI(CONCAT("urn:lectern:slide:path:", ?key, ":number:", STR(?n))) AS ?slide)
+  BIND(IRI(CONCAT("urn:lectern:note:path:", ?key, ":slide:", STR(?n), ":index:", STR(?k))) AS ?note)
+  BIND(IF(?category = "presenter", "presenter", "speaker") AS ?kind)
+  OPTIONAL {
+    ?b md:parent ?doc ; md:line ?bl .
+    FILTER(?bl > ?ol && ?bl < ?end)
+  }
+}
+""" ;
+
+    # 4. Includes, numbered within their slide, with the target as written and each part
+    #    of the range list (up to 16 parts; the list as written is kept whole as well).
+    #    `A-B` is slides A to B, `A-` A to the end, `-B` 1 to B, `N` slide N alone.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX lt: <https://ikigai-rs.dev/ns/lectern#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+CONSTRUCT {
+  ?slide lt:include ?include .
+  ?include a lt:Include ; lt:slide ?slide ; lt:index ?k ; lt:target ?target ;
+    lt:ranges ?ranges ; lt:range ?range .
+  ?range a lt:Range ; lt:index ?part ; lt:text ?piece ; lt:first ?first ; lt:last ?last .
+}
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  {
+    SELECT ?il ?value (COUNT(DISTINCT ?sl) + 1 AS ?n) WHERE {
+      ?im a md:Match ; md:matchedBy "include" ; md:line ?il ; md:value ?value ; md:block ?ib .
+      ?ib a md:HtmlBlock .
+      OPTIONAL {
+        ?sm a md:Match ; md:matchedBy "separator" ; md:line ?sl .
+        FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+        FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?sl } }
+        FILTER(?sl < ?il)
+      }
+    } GROUP BY ?il ?value
+  }
+  {
+    SELECT ?il (COUNT(DISTINCT ?pl) AS ?k) WHERE {
+      ?im a md:Match ; md:matchedBy "include" ; md:line ?il ; md:block ?ib .
+      ?ib a md:HtmlBlock .
+      ?pm a md:Match ; md:matchedBy "include" ; md:line ?pl ; md:block ?pb .
+      ?pb a md:HtmlBlock .
+      FILTER(?pl <= ?il)
+      FILTER NOT EXISTS {
+        ?sm a md:Match ; md:matchedBy "separator" ; md:line ?sl .
+        FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+        FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?sl } }
+        FILTER(?sl > ?pl && ?sl < ?il)
+      }
+    } GROUP BY ?il
+  }
+  BIND(ENCODE_FOR_URI(?path) AS ?key)
+  BIND(IRI(CONCAT("urn:lectern:slide:path:", ?key, ":number:", STR(?n))) AS ?slide)
+  BIND(CONCAT("urn:lectern:include:path:", ?key, ":slide:", STR(?n), ":index:", STR(?k)) AS ?base)
+  BIND(IRI(?base) AS ?include)
+  BIND(REPLACE(IF(CONTAINS(?value, "#"), STRBEFORE(?value, "#"), ?value), "^[ ]+|[ ]+$", "") AS ?target)
+  BIND(IF(CONTAINS(?value, "#"), REPLACE(STRAFTER(?value, "#"), "^[ ]+|[ ]+$", ""), ?none) AS ?written)
+  BIND(IF(?written != "", ?written, ?none) AS ?ranges)
+  # One row per possible part; BIND inside an OPTIONAL could not see ?ranges.
+  VALUES ?part { 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 }
+  BIND(REPLACE(?ranges, '''[ \t]''', "") AS ?compact)
+  BIND(CONCAT("^([^,]*,){", STR(?part - 1), "}") AS ?skip)
+  BIND(IF(REGEX(?compact, ?skip), REPLACE(?compact, CONCAT(?skip, "([^,]*).*$"), "$2"), ?none) AS ?piece)
+  BIND(CONTAINS(?piece, "-") AS ?span)
+  BIND(IF(?span, STRBEFORE(?piece, "-"), ?piece) AS ?low)
+  BIND(IF(?span, STRAFTER(?piece, "-"), ?piece) AS ?high)
+  BIND(IF(?piece = "", ?none, IF(?low = "", 1, xsd:integer(?low))) AS ?first)
+  BIND(IF(?piece = "" || ?high = "", ?none, xsd:integer(?high)) AS ?last)
+  BIND(IF(BOUND(?piece), IRI(CONCAT(?base, ":part:", STR(?part))), ?none) AS ?range)
+}
+""" ;
+
+    # 5. Questions (the shared course directive), on the slide they sit on.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX learn: <https://ikigai-rs.dev/ns/learn#>
+CONSTRUCT {
+  ?slide learn:question ?question .
+  ?question a learn:Question ; learn:name ?name ; learn:unit ?unit ;
+    learn:kind ?kind ; learn:prompt ?prompt ; learn:answer ?answer ; learn:check ?check .
+  ?unit a learn:Unit ; learn:name ?unitName .
+}
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  {
+    SELECT ?qb ?ql (COUNT(DISTINCT ?sl) + 1 AS ?n) WHERE {
+      ?qb a md:HtmlBlock ; md:text ?qt ; md:line ?ql .
+      FILTER(REGEX(?qt, "^[ ]*<!--[ ]*question([^a-z:-]|$)"))
+      OPTIONAL {
+        ?sm a md:Match ; md:matchedBy "separator" ; md:line ?sl .
+        FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+        FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?sl } }
+        FILTER(?sl < ?ql)
+      }
+    } GROUP BY ?qb ?ql
+  }
+  ?nm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?nv .
+  FILTER(STRSTARTS(?nv, "name:"))
+  ?um a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?uv .
+  FILTER(STRSTARTS(?uv, "unit:"))
+  BIND(REPLACE(STRAFTER(?nv, ":"), "^[ ]+|[ ]+$", "") AS ?name)
+  BIND(REPLACE(STRAFTER(?uv, ":"), "^[ ]+|[ ]+$", "") AS ?unitName)
+  FILTER(?name != "" && ?unitName != "")
+  BIND(IRI(CONCAT("urn:learn:unit:name:", ENCODE_FOR_URI(?unitName))) AS ?unit)
+  BIND(IRI(CONCAT("urn:learn:question:unit:", ENCODE_FOR_URI(?unitName), ":name:", ENCODE_FOR_URI(?name))) AS ?question)
+  BIND(IRI(CONCAT("urn:lectern:slide:path:", ENCODE_FOR_URI(?path), ":number:", STR(?n))) AS ?slide)
+  OPTIONAL {
+    ?fm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?fv .
+    BIND(STRBEFORE(?fv, ":") AS ?field)
+    BIND(REPLACE(STRAFTER(?fv, ":"), "^[ ]+|[ ]+$", "") AS ?fieldValue)
+    BIND(IF(?field = "kind", LCASE(?fieldValue), ?none) AS ?kind)
+    BIND(IF(?field = "prompt", ?fieldValue, ?none) AS ?prompt)
+    BIND(IF(?field = "answer", ?fieldValue, ?none) AS ?answer)
+    BIND(IF(?field = "check", ?fieldValue, ?none) AS ?check)
+  }
+}
+""" ;
+
+    # 6. A question's choices, numbered in the order written. `[x]` marks a correct one.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX learn: <https://ikigai-rs.dev/ns/learn#>
+CONSTRUCT {
+  ?question learn:choice ?choice .
+  ?choice a learn:Choice ; learn:index ?i ; learn:text ?text ; learn:correct ?correct .
+}
+WHERE {
+  ?qb a md:HtmlBlock ; md:text ?qt .
+  FILTER(REGEX(?qt, "^[ ]*<!--[ ]*question([^a-z:-]|$)"))
+  ?nm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?nv .
+  FILTER(STRSTARTS(?nv, "name:"))
+  ?um a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?uv .
+  FILTER(STRSTARTS(?uv, "unit:"))
+  BIND(REPLACE(STRAFTER(?nv, ":"), "^[ ]+|[ ]+$", "") AS ?name)
+  BIND(REPLACE(STRAFTER(?uv, ":"), "^[ ]+|[ ]+$", "") AS ?unitName)
+  FILTER(?name != "" && ?unitName != "")
+  {
+    SELECT ?qb ?cl ?cv (COUNT(DISTINCT ?pl) AS ?i) WHERE {
+      ?cm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?cv ; md:line ?cl .
+      FILTER(STRSTARTS(?cv, "choice:"))
+      ?pm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?pv ; md:line ?pl .
+      FILTER(STRSTARTS(?pv, "choice:") && ?pl <= ?cl)
+    } GROUP BY ?qb ?cl ?cv
+  }
+  BIND(REPLACE(STRAFTER(?cv, ":"), "^[ ]+|[ ]+$", "") AS ?written)
+  # A marker is `[x]`, `[X]` or `[ ]`. Read with string functions: in a regex, `[[]`
+  # opens a nested class.
+  BIND(STRSTARTS(?written, "[") && SUBSTR(?written, 3, 1) = "]" AS ?marked)
+  BIND(?marked && UCASE(SUBSTR(?written, 2, 1)) = "X" AS ?correct)
+  BIND(IF(?marked, REPLACE(SUBSTR(?written, 4), "^[ ]+", ""), ?written) AS ?text)
+  BIND(IRI(CONCAT("urn:learn:question:unit:", ENCODE_FOR_URI(?unitName), ":name:", ENCODE_FOR_URI(?name))) AS ?question)
+  BIND(IRI(CONCAT("urn:learn:choice:unit:", ENCODE_FOR_URI(?unitName), ":question:", ENCODE_FOR_URI(?name), ":index:", STR(?i))) AS ?choice)
+}
+""" ;
+
+    # 7. Exercise references (the shared course directive), on the slide they sit on.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX learn: <https://ikigai-rs.dev/ns/learn#>
+CONSTRUCT {
+  ?slide learn:exercise ?exercise .
+  ?exercise a learn:Exercise ; learn:name ?name ; learn:unit ?unit ;
+    learn:path ?exercisePath ; learn:title ?title .
+  ?unit a learn:Unit ; learn:name ?unitName .
+}
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  {
+    SELECT ?eb ?el (COUNT(DISTINCT ?sl) + 1 AS ?n) WHERE {
+      ?eb a md:HtmlBlock ; md:text ?et ; md:line ?el .
+      FILTER(REGEX(?et, "^[ ]*<!--[ ]*exercise([^a-z:-]|$)"))
+      OPTIONAL {
+        ?sm a md:Match ; md:matchedBy "separator" ; md:line ?sl .
+        FILTER NOT EXISTS { ?sm md:block ?sb . ?sb md:fenced true }
+        FILTER EXISTS { { ?sm md:block ?sbIn } UNION { ?sbRule a md:ThematicBreak ; md:line ?sl } }
+        FILTER(?sl < ?el)
+      }
+    } GROUP BY ?eb ?el
+  }
+  ?nm a md:Match ; md:matchedBy "field" ; md:block ?eb ; md:value ?nv .
+  FILTER(STRSTARTS(?nv, "name:"))
+  ?um a md:Match ; md:matchedBy "field" ; md:block ?eb ; md:value ?uv .
+  FILTER(STRSTARTS(?uv, "unit:"))
+  BIND(REPLACE(STRAFTER(?nv, ":"), "^[ ]+|[ ]+$", "") AS ?name)
+  BIND(REPLACE(STRAFTER(?uv, ":"), "^[ ]+|[ ]+$", "") AS ?unitName)
+  FILTER(?name != "" && ?unitName != "")
+  BIND(IRI(CONCAT("urn:learn:unit:name:", ENCODE_FOR_URI(?unitName))) AS ?unit)
+  BIND(IRI(CONCAT("urn:learn:exercise:unit:", ENCODE_FOR_URI(?unitName), ":name:", ENCODE_FOR_URI(?name))) AS ?exercise)
+  BIND(IRI(CONCAT("urn:lectern:slide:path:", ENCODE_FOR_URI(?path), ":number:", STR(?n))) AS ?slide)
+  OPTIONAL {
+    ?fm a md:Match ; md:matchedBy "field" ; md:block ?eb ; md:value ?fv .
+    BIND(STRBEFORE(?fv, ":") AS ?field)
+    BIND(REPLACE(STRAFTER(?fv, ":"), "^[ ]+|[ ]+$", "") AS ?fieldValue)
+    BIND(IF(?field = "path", ?fieldValue, ?none) AS ?exercisePath)
+    BIND(IF(?field = "title", ?fieldValue, ?none) AS ?title)
+  }
+}
+""" .
+
+# --- the profile entries -------------------------------------------------------------
+
+<urn:markdown:mapping:lectern:citation:separator> md:name "separator" ;
+    md:pattern "(?mR)^[ \t]*(?P<v>---)[ \t]*$" .
+
+# The category after `notes:` is the value; a bare `<!-- notes -->` has none, so its
+# value is the whole comment, which construct 3 reads as an ordinary note.
+<urn:markdown:mapping:lectern:citation:note-open> md:name "note-open" ;
+    md:pattern "(?mR)^[ \t]*<!--[ \t]*notes(?::(?P<v>[A-Za-z0-9_-]+))?[ \t]*-->[ \t]*$" .
+
+<urn:markdown:mapping:lectern:citation:note-close> md:name "note-close" ;
+    md:pattern "(?mR)^[ \t]*<!--[ \t]*(?P<v>/notes)[ \t]*-->[ \t]*$" .
+
+<urn:markdown:mapping:lectern:citation:include> md:name "include" ;
+    md:pattern "(?mR)^[ \t]*<!--[ \t]*include:[ \t]*(?P<v>.+?)[ \t]*-->[ \t]*$" .
+
+# One `key: value` line of a question or exercise directive. The constructs keep only
+# the lines that fall inside one.
+<urn:markdown:mapping:lectern:citation:field> md:name "field" ;
+    md:pattern "(?mR)^[ \t]*(?P<v>(?:name|unit|kind|prompt|choice|answer|check|path|title):.*?)[ \t]*$" .
+
+# --- the shapes ------------------------------------------------------------------------
+
+<urn:markdown:mapping:lectern:shape:deck> a sh:NodeShape ;
+    sh:targetClass lt:Deck ;
+    sh:property <urn:markdown:mapping:lectern:shape:deck:path> ,
+                <urn:markdown:mapping:lectern:shape:deck:slide> .
+<urn:markdown:mapping:lectern:shape:deck:path> sh:path lt:path ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:deck:slide> sh:path lt:slide ;
+    sh:minCount 1 ; sh:class lt:Slide .
+
+<urn:markdown:mapping:lectern:shape:slide> a sh:NodeShape ;
+    sh:targetClass lt:Slide ;
+    sh:property <urn:markdown:mapping:lectern:shape:slide:deck> ,
+                <urn:markdown:mapping:lectern:shape:slide:number> ,
+                <urn:markdown:mapping:lectern:shape:slide:title> ,
+                <urn:markdown:mapping:lectern:shape:slide:block> ,
+                <urn:markdown:mapping:lectern:shape:slide:note> ,
+                <urn:markdown:mapping:lectern:shape:slide:include> ,
+                <urn:markdown:mapping:lectern:shape:slide:question> ,
+                <urn:markdown:mapping:lectern:shape:slide:exercise> .
+<urn:markdown:mapping:lectern:shape:slide:deck> sh:path lt:deck ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:class lt:Deck .
+<urn:markdown:mapping:lectern:shape:slide:number> sh:path lt:number ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer .
+<urn:markdown:mapping:lectern:shape:slide:title> sh:path lt:title ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:slide:block> sh:path lt:block ; sh:nodeKind sh:IRI .
+<urn:markdown:mapping:lectern:shape:slide:note> sh:path lt:note ; sh:class lt:Note .
+<urn:markdown:mapping:lectern:shape:slide:include> sh:path lt:include ; sh:class lt:Include .
+<urn:markdown:mapping:lectern:shape:slide:question> sh:path learn:question ; sh:class learn:Question .
+<urn:markdown:mapping:lectern:shape:slide:exercise> sh:path learn:exercise ; sh:class learn:Exercise .
+
+<urn:markdown:mapping:lectern:shape:note> a sh:NodeShape ;
+    sh:targetClass lt:Note ;
+    sh:property <urn:markdown:mapping:lectern:shape:note:slide> ,
+                <urn:markdown:mapping:lectern:shape:note:index> ,
+                <urn:markdown:mapping:lectern:shape:note:kind> ,
+                <urn:markdown:mapping:lectern:shape:note:block> .
+<urn:markdown:mapping:lectern:shape:note:slide> sh:path lt:slide ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:class lt:Slide .
+<urn:markdown:mapping:lectern:shape:note:index> sh:path lt:index ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer .
+<urn:markdown:mapping:lectern:shape:note:kind> sh:path lt:kind ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:note:block> sh:path lt:block ; sh:nodeKind sh:IRI .
+
+<urn:markdown:mapping:lectern:shape:include> a sh:NodeShape ;
+    sh:targetClass lt:Include ;
+    sh:property <urn:markdown:mapping:lectern:shape:include:slide> ,
+                <urn:markdown:mapping:lectern:shape:include:index> ,
+                <urn:markdown:mapping:lectern:shape:include:target> ,
+                <urn:markdown:mapping:lectern:shape:include:ranges> ,
+                <urn:markdown:mapping:lectern:shape:include:range> .
+<urn:markdown:mapping:lectern:shape:include:slide> sh:path lt:slide ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:class lt:Slide .
+<urn:markdown:mapping:lectern:shape:include:index> sh:path lt:index ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer .
+<urn:markdown:mapping:lectern:shape:include:target> sh:path lt:target ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:include:ranges> sh:path lt:ranges ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:include:range> sh:path lt:range ; sh:class lt:Range .
+
+<urn:markdown:mapping:lectern:shape:range> a sh:NodeShape ;
+    sh:targetClass lt:Range ;
+    sh:property <urn:markdown:mapping:lectern:shape:range:index> ,
+                <urn:markdown:mapping:lectern:shape:range:text> ,
+                <urn:markdown:mapping:lectern:shape:range:first> ,
+                <urn:markdown:mapping:lectern:shape:range:last> .
+<urn:markdown:mapping:lectern:shape:range:index> sh:path lt:index ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer .
+<urn:markdown:mapping:lectern:shape:range:text> sh:path lt:text ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:range:first> sh:path lt:first ;
+    sh:maxCount 1 ; sh:datatype xsd:integer .
+<urn:markdown:mapping:lectern:shape:range:last> sh:path lt:last ;
+    sh:maxCount 1 ; sh:datatype xsd:integer .
+
+# The course directives' shapes, the same in the mdbook mapping.
+<urn:markdown:mapping:lectern:shape:question> a sh:NodeShape ;
+    sh:targetClass learn:Question ;
+    sh:property <urn:markdown:mapping:lectern:shape:question:name> ,
+                <urn:markdown:mapping:lectern:shape:question:unit> ,
+                <urn:markdown:mapping:lectern:shape:question:kind> ,
+                <urn:markdown:mapping:lectern:shape:question:prompt> ,
+                <urn:markdown:mapping:lectern:shape:question:answer> ,
+                <urn:markdown:mapping:lectern:shape:question:check> ,
+                <urn:markdown:mapping:lectern:shape:question:choice> .
+<urn:markdown:mapping:lectern:shape:question:name> sh:path learn:name ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:question:unit> sh:path learn:unit ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:class learn:Unit .
+<urn:markdown:mapping:lectern:shape:question:kind> sh:path learn:kind ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:question:prompt> sh:path learn:prompt ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:question:answer> sh:path learn:answer ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:question:check> sh:path learn:check ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:question:choice> sh:path learn:choice ; sh:class learn:Choice .
+
+<urn:markdown:mapping:lectern:shape:choice> a sh:NodeShape ;
+    sh:targetClass learn:Choice ;
+    sh:property <urn:markdown:mapping:lectern:shape:choice:index> ,
+                <urn:markdown:mapping:lectern:shape:choice:text> ,
+                <urn:markdown:mapping:lectern:shape:choice:correct> .
+<urn:markdown:mapping:lectern:shape:choice:index> sh:path learn:index ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer .
+<urn:markdown:mapping:lectern:shape:choice:text> sh:path learn:text ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:choice:correct> sh:path learn:correct ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean .
+
+<urn:markdown:mapping:lectern:shape:exercise> a sh:NodeShape ;
+    sh:targetClass learn:Exercise ;
+    sh:property <urn:markdown:mapping:lectern:shape:exercise:name> ,
+                <urn:markdown:mapping:lectern:shape:exercise:unit> ,
+                <urn:markdown:mapping:lectern:shape:exercise:path> ,
+                <urn:markdown:mapping:lectern:shape:exercise:title> .
+<urn:markdown:mapping:lectern:shape:exercise:name> sh:path learn:name ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:exercise:unit> sh:path learn:unit ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:class learn:Unit .
+<urn:markdown:mapping:lectern:shape:exercise:path> sh:path learn:path ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:lectern:shape:exercise:title> sh:path learn:title ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+
+<urn:markdown:mapping:lectern:shape:unit> a sh:NodeShape ;
+    sh:targetClass learn:Unit ;
+    sh:property <urn:markdown:mapping:lectern:shape:unit:name> .
+<urn:markdown:mapping:lectern:shape:unit:name> sh:path learn:name ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .

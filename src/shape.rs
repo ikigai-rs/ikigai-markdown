@@ -245,10 +245,12 @@ pub(crate) fn validate(shapes: &Shapes, triples: &[Triple]) -> Vec<Violation> {
                 types.entry(s.clone()).or_default().insert(c.as_str());
             }
         }
-        values
-            .entry((s, t.predicate.as_str()))
-            .or_default()
-            .push(&t.object);
+        // SHACL counts distinct value nodes. A corpus is a union of per-document graphs, so
+        // a fact two documents both assert (a unit both name) arrives twice and is one value.
+        let found = values.entry((s, t.predicate.as_str())).or_default();
+        if !found.contains(&&t.object) {
+            found.push(&t.object);
+        }
     }
     let short = crate::analyze::short;
     let mut out = BTreeSet::new();

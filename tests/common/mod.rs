@@ -70,6 +70,14 @@ impl Scratch {
         }
         dir
     }
+
+    /// Install the mapping directory `from` in this home under `name`, as a person would.
+    pub fn install_dir(&self, name: &str, from: &Path) -> PathBuf {
+        let dir = self.0.join("markdown/mappings").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(from.join("mapping.ttl"), dir.join("mapping.ttl")).unwrap();
+        dir
+    }
 }
 
 /// The module's space over `home`, with the file mount a host binds for named mappings:
@@ -139,6 +147,26 @@ pub fn corpus(edits: &[(&str, &str)]) -> Vec<(String, String)> {
         }
     }
     docs
+}
+
+/// Every markdown file under `root` as (path relative to `root`, text), in path order.
+pub fn tree(root: &Path) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    walk(root, &mut files);
+    files
+        .iter()
+        .map(|p| {
+            (
+                p.strip_prefix(root)
+                    .unwrap()
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                std::fs::read_to_string(p).unwrap(),
+            )
+        })
+        .collect()
 }
 
 /// Lift every document through the kernel under `mapping` (Turtle, bound at

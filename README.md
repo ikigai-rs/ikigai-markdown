@@ -46,7 +46,9 @@ up anywhere in `src/`.
 Three teams with three document conventions are three mapping files and zero lines of
 code. `urn:markdown:vocabulary` serves the `md:` terms.
 
-Frontmatter keeps scalar text without inferring types, including scalar aliases
+Frontmatter is the YAML block that opens a document, on its first line. A `---`, text,
+`---` run later in the document is what CommonMark makes of it, a thematic break and a
+setext heading, never a second frontmatter. Frontmatter keeps scalar text without inferring types, including scalar aliases
 (`copy: *anchor`). Collection aliases are not expanded: they produce an
 `md:frontmatterError` asking you to write the collection at each use. No partial
 fields are emitted on a frontmatter error; the remaining Markdown still lifts.
@@ -251,6 +253,83 @@ cargo run --release --example reconcile -- tests/fixtures/example example
 ```text
 cargo run --release --example reconcile -- tests/fixtures/example mappings/example/mapping.ttl
 ```
+
+## Dialect mappings: `lectern` and `mdbook`
+
+Two mappings for real formats ship beside the example. Each is a mapping file only,
+installed by name like any other (`cp -R mappings/lectern ~/.config/ikigai/markdown/mappings/`):
+
+- **`urn:markdown:mapping:mdbook`** (`mappings/mdbook/`) lifts an mdBook's source. Every
+  Markdown file except `SUMMARY.md` is a chapter, `urn:mdbook:chapter:path:{path}`, titled
+  by its first level-1 heading. `SUMMARY.md` lists chapters by the same IRI, with the text
+  each is listed as, its 1-based position, whether it is numbered, and the chapter it is
+  nested under. Lift each file with its path from the book's root (`src/SUMMARY.md`).
+- **`urn:markdown:mapping:lectern`** (`mappings/lectern/`) lifts
+  [Lectern Markdown](https://github.com/bsletten/lectern-slides) slide decks, one deck file
+  per document:
+  - **Slides.** Slides split the way lectern's fence-aware splitter splits them: at a line
+    that is `---` once stripped, outside fenced code and frontmatter. They are numbered
+    from 1 within the file, empty slides included, so
+    `urn:lectern:slide:path:{path}:number:{n}` is the slide an include range names.
+  - **Notes.** Speaker notes (`<!-- notes -->`) and presenter notes
+    (`<!-- notes:presenter -->`) end at `<!-- /notes -->` or at the end of the slide. Each
+    links the blocks it holds.
+  - **Includes.** Each `<!-- include: path#1-3,14 -->` keeps its target and its ranges as
+    written, plus each part of the range list (up to 16 parts) as a first and last slide.
+
+  Lectern's fenced-div notes (`::: notes`) and its `Note:` lines are not lifted yet, and
+  include targets are not resolved against lectern's partials search path.
+
+Both lift the course directives below. `tests/dialects.rs` pins each fixture's graph
+(`tests/fixtures/lectern`, `tests/fixtures/mdbook`).
+
+## Course directives: questions and exercises
+
+A course unit can be a Book chapter or a lectern deck. The same two directives work in
+both, written as HTML comments so the file stays CommonMark and nothing shows when it is
+rendered. A directive is one HTML block. Its first line is `<!-- question` or
+`<!-- exercise`, and then comes one `key: value` per line, then `-->`:
+
+```markdown
+<!-- question
+name: triple-parts
+unit: rdf-basics
+kind: choice
+prompt: Which three parts make a triple?
+choice: [x] subject, predicate, object
+choice: [ ] subject, verb, object
+-->
+
+<!-- exercise
+name: load-a-graph
+unit: rdf-basics
+path: exercises/load-a-graph
+title: Load a graph and count its triples
+-->
+```
+
+| key | directive | |
+|---|---|---|
+| `name` | both, required | the key within the unit; with `unit`, the IRI |
+| `unit` | both, required | the unit it practices: `urn:learn:unit:name:{unit}` |
+| `kind` | question, required | `choice`, `exact` (the response must equal an answer), `short` (a short answer, checked against a model answer) or `check` (a script checks it) |
+| `prompt` | question, required | the question, on one line |
+| `choice` | question, `choice` kind | one per line, in order; `[x]` marks a correct one, `[ ]` or no marker one that is not |
+| `answer` | question, `exact` and `short` | one per line: each accepted answer, or the model answer |
+| `check` | question, `check` kind | the path of the script that checks a response |
+| `path` | exercise, optional | where the exercise lives |
+| `title` | exercise, optional | its title |
+
+A question is `urn:learn:question:unit:{unit}:name:{name}` and its choices are
+`…:index:{i}` under `urn:learn:choice:unit:{unit}:question:{name}`. An exercise is
+`urn:learn:exercise:unit:{unit}:name:{name}`. The slide or chapter it sits on links it
+with `learn:question` or `learn:exercise`. Names and units are percent-encoded in IRIs,
+so keep them to lowercase words and hyphens. A directive with no `name` or no `unit` is
+not lifted, and neither is one inside fenced code, so a page can show the syntax. The
+same question written in two places is one question, so give each its own name.
+
+The terms are `https://ikigai-rs.dev/ns/learn#`, `…/ns/lectern#` and `…/ns/mdbook#`.
+Like `md:`, they are not deployed there yet.
 
 ## Linting a mapping, and a corpus under it
 

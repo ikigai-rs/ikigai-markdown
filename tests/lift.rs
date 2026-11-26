@@ -560,6 +560,57 @@ fn every_term_the_lift_writes_is_in_the_vocabulary() {
 }
 
 #[test]
+fn only_a_yaml_block_that_opens_the_document_is_frontmatter() {
+    // pulldown-cmark reads `---`, text, `---` as a metadata block at ANY block start. Later
+    // in a document, CommonMark reads it as a thematic break and a setext heading, and so
+    // does every renderer that shows the file.
+    let text = "---\ntitle: Kept\n---\n\n# Top\n\n---\n## Next\nmore: text\n---\n";
+    let quads = lift(text, &doc("later.md"), &Profile::default());
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?key ?value WHERE { ?d md:field ?f . ?f md:key ?key ; md:value ?value }"
+        ),
+        vec![row(&["title", "Kept"])]
+    );
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?text WHERE { ?f a md:Frontmatter ; md:text ?text }"
+        ),
+        vec![row(&["title: Kept\n"])]
+    );
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?class ?line ?text WHERE { ?b a ?class ; md:parent ?p ; md:order ?o ; \
+             md:line ?line OPTIONAL { ?b md:text ?text } } ORDER BY ?o"
+        ),
+        vec![
+            row(&["https://ikigai-rs.dev/ns/md#Heading", "5", "Top"]),
+            row(&["https://ikigai-rs.dev/ns/md#ThematicBreak", "7", ""]),
+            row(&["https://ikigai-rs.dev/ns/md#Heading", "8", "Next"]),
+            row(&["https://ikigai-rs.dev/ns/md#Heading", "9", "more: text"]),
+        ]
+    );
+
+    // With no frontmatter, and a blank first line, a YAML-shaped block is not one either.
+    let quads = lift(
+        "\n---\nkey: value\n---\n",
+        &doc("blank.md"),
+        &Profile::default(),
+    );
+    assert!(ask(&quads, "SELECT ?f WHERE { ?f a md:Frontmatter }").is_empty());
+    assert_eq!(
+        ask(
+            &quads,
+            "SELECT ?text WHERE { ?h a md:Heading ; md:text ?text }"
+        ),
+        vec![row(&["key: value"])]
+    );
+}
+
+#[test]
 fn thematic_breaks_have_extents_and_own_their_citations() {
     let profile = Mapping::parse(
         r#"@prefix md: <https://ikigai-rs.dev/ns/md#> .

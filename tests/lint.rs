@@ -469,6 +469,32 @@ fn an_unchanged_corpus_reports_nothing() {
     );
 }
 
+#[test]
+fn a_value_two_documents_both_assert_is_one_value_to_the_shape() {
+    // SHACL counts distinct values. The corpus is a union of per-document graphs, so the
+    // same decision recorded in two places asserts its title twice: one value, not two.
+    let record = std::fs::read_to_string(
+        repo().join("tests/fixtures/example/decisions/0001-use-turtle-for-mappings.md"),
+    )
+    .unwrap();
+    let copy = "archive/decisions/0001-use-turtle-for-mappings.md";
+    let docs = corpus(&[(copy, &record)]);
+    let text = check(&docs, &docs, &example(), &[]);
+    assert!(!text.contains("dr:title"), "{text}");
+    assert!(!text.contains("dr:status"), "{text}");
+    // Each copy is its own dr:document, so that one is two values, and is still reported.
+    assert!(text.contains("dr:document: 2 values"), "{text}");
+
+    // Two different titles are two values.
+    let retitled = record.replace(
+        "# Use Turtle for mappings",
+        "# Use Turtle for every mapping",
+    );
+    let docs = corpus(&[(copy, &retitled)]);
+    let text = check(&docs, &docs, &example(), &[]);
+    assert!(text.contains("dr:title: 2 values"), "{text}");
+}
+
 const RECORD_AS_DETAILS: &str = "# Cache every lift
 
 ## Details
