@@ -1,8 +1,8 @@
 //! The mapping linter: three checks a spec author runs when a document format changes.
 //!
 //! - [`check_mapping`] (`urn:markdown:lint:mapping`): the mapping on its own. Every
-//!   profile pattern compiles as a Rust regex, every construct parses and is a CONSTRUCT
-//!   within the lift's bounds, and what the constructs write is checked against the shape
+//!   profile pattern compiles as a Rust regex, every construct parses and is a repeatable
+//!   CONSTRUCT within the lift's bounds, and what the constructs write is checked against the shape
 //!   the mapping states with `md:shape`, or the report says that no shape is stated.
 //! - [`expectations`] (`urn:markdown:lint:expects`): what the mapping DEPENDS ON in a
 //!   document: the paths, frontmatter keys, headings, heading levels and citation forms
@@ -459,17 +459,6 @@ fn mapping_findings(read: &Read) -> Vec<Finding> {
         if let Some(problem) = &c.problem {
             push(Severity::Error, "construct-invalid", problem.clone());
             continue;
-        }
-        if c.produces.blank_node {
-            push(
-                Severity::Error,
-                "construct-blank-node",
-                format!(
-                    "construct {} mints a blank node in its template, which the lift refuses; \
-                     build IRIs with IRI(CONCAT(…))",
-                    c.index
-                ),
-            );
         }
         for p in c.produces.predicates.iter().filter(|p| p.starts_with(MD)) {
             push(

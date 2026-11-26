@@ -201,7 +201,7 @@ fn three_thousand_parentheses_in_a_construct_are_refused_on_mapping_and_abort_no
     // On main before ledger #963 this aborted the child: `has overflowed its stack`.
     let outcome = probe("construct-parens", 3000);
     assert!(
-        outcome.starts_with("err invalid argument `mapping`: md:construct: ")
+        outcome.starts_with("err invalid argument `mapping`: mapping <urn:markdown:mapping:inline> md:construct 1: ")
             && outcome.contains(&format!("deeper than {BOUND}")),
         "{outcome}"
     );
@@ -219,11 +219,19 @@ fn a_run_of_not_is_nesting_and_is_refused() {
 }
 
 #[test]
-fn a_long_flat_chain_runs_on_the_stack_the_construct_is_given() {
-    // Not nesting, so no lexical bound refuses it, and it aborted a 2 MiB thread in a debug
-    // build before ledger #963. It is parsed and evaluated on a stack sized for its length.
+fn a_long_flat_chain_reaches_the_classifiers_depth_limit_without_aborting() {
+    // A flat chain passes the lexical nesting guard but produces a deep algebra tree.
+    // It used to abort a 2 MiB thread before ledger #963. It must now survive parsing,
+    // classification, and dropping the parsed query on its sized stack.
     let outcome = probe("construct-or-chain", 600);
-    assert!(outcome.starts_with("ok "), "{outcome}");
+    assert!(
+        outcome.starts_with("err invalid argument `mapping`")
+            && outcome.contains("repeatability classification exceeds the algebra depth limit")
+            && outcome.contains("Reduce query nesting"),
+        "{outcome}"
+    );
+    let within_limit = probe("construct-or-chain", 100);
+    assert!(within_limit.starts_with("ok "), "{within_limit}");
 }
 
 // ------------------------------------------------------------------ at the bound, and time

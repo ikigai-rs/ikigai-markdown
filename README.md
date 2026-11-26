@@ -33,8 +33,8 @@ up anywhere in `src/`.
 ```
 
 - **`md:construct`**: SPARQL CONSTRUCTs run over the document's structural graph. Their
-  union is the domain graph. They must not emit blank nodes, so build IRIs with
-  `IRI(CONCAT(…))`.
+  union is the domain graph. They must be repeatable and must not emit blank nodes.
+  Build IRIs from stable input keys.
 - **`md:split` and `md:citation`** make up the **lift profile**. It exists because of
   one wall: SPARQL 1.1 cannot split a string into rows (oxigraph adds no function for
   it, and xrust has no `fn:tokenize`). Joining a regex against the entities that exist
@@ -62,6 +62,44 @@ Structural node IRIs use document order (`#b1`, `#b2`, and so on). Identical inp
 produces identical IRIs and no blank nodes, but inserting an earlier block can
 renumber later nodes. Mappings that need identities across edits should mint domain
 IRIs from document keys or content rather than reuse structural block IRIs.
+
+## Migrating mappings that generate identifiers
+
+The lift refuses a nonrepeatable construct before running it, and mapping lint reports
+the same reason. An existing mapping that calls `UUID()`, `STRUUID()`, or `BNODE()`
+(including `BNODE("label")`), or creates a blank node in the CONSTRUCT template, must
+use a stable IRI instead. The repeatability check also rejects `NOW()`, `RAND()`,
+`LIMIT` or `OFFSET` even with `ORDER BY`, `SAMPLE`, `GROUP_CONCAT`, and `REDUCED`.
+If the classifier reaches its traversal limit, simplify the query before trying again.
+
+For example, if a heading mapping uses `BIND(UUID() AS ?id)` or
+`BIND(BNODE(STR(?heading)) AS ?id)`, replace that BIND with an IRI built from the
+document IRI and the heading's position. If the template uses `[]` as the subject,
+change it to `?id` and add the same BIND.
+
+```sparql
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+CONSTRUCT { ?id <https://example.org/vocab/label> ?label }
+WHERE {
+  ?heading a md:Heading ; md:document ?doc ; md:order ?position ; md:text ?label .
+  BIND(IRI(CONCAT("https://example.org/id/heading/",
+                  ENCODE_FOR_URI(STR(?doc)), "/", STR(?position))) AS ?id)
+}
+```
+
+A position identifies the same node for identical inputs, but can change if you add
+an earlier block. If the heading's text defines its identity, use a content digest
+instead. In the same query, replace the BIND with this one.
+
+```sparql
+BIND(IRI(CONCAT("https://example.org/id/heading/",
+                ENCODE_FOR_URI(STR(?doc)), "/", SHA256(STR(?label)))) AS ?id)
+```
+
+Equal text in one document now shares an ID, and editing that text changes the ID.
+If equal headings must stay distinct, include a stable section path or another unique
+key from the document. Use an IRI namespace you control. Existing stored IDs are not
+rewritten automatically, so update downstream references when replacing them.
 
 ## Caching: two golden threads
 
@@ -223,7 +261,7 @@ what changed. It is four resources, each with a text face (the default) and a Tu
 
 | resource | what it answers |
 |---|---|
-| `urn:markdown:lint:mapping mapping=…` | The mapping on its own. Every `md:split` and `md:citation` pattern compiles as a Rust regex, every `md:construct` parses and is a CONSTRUCT within the lift's bounds, and nothing writes a blank node. What the constructs write is checked against the shape the mapping states with `md:shape`. With no shape, the report says so. |
+| `urn:markdown:lint:mapping mapping=…` | The mapping on its own. Every `md:split` and `md:citation` pattern compiles as a Rust regex, every `md:construct` parses and is a repeatable CONSTRUCT within the lift's bounds. What the constructs write is checked against the shape the mapping states with `md:shape`. With no shape, the report says so. |
 | `urn:markdown:lint:expects mapping=…` | What the mapping depends on in a document, for the person writing the documents: the paths, frontmatter keys, headings, heading levels and citation forms it reads, and every other literal its constructs compare document text with. Read straight from the constructs' SPARQL algebra, with nothing run. |
 | `urn:markdown:lint:snapshot docs=… root=… mapping=…` | A list of documents (one IRI per line, so a list can be piped in) lifted and reduced to what the corpus check compares, as N-Quads with one graph per document, in path order and sorted within each document. Save it, and it is a baseline. |
 | `urn:markdown:lint:corpus docs=… root=… mapping=… baseline=…` | The documents lifted now, compared per document with a baseline snapshot. It reports records and fields lost, gained or changed, citations no longer recognized, headings the mapping reads that vanished or moved, frontmatter keys the mapping does not read, frontmatter that no longer parses, documents the lift cannot read, and values that break the stated shape. The output is sorted and deterministic. |

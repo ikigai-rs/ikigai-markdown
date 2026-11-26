@@ -374,18 +374,16 @@ fn the_same_bytes_lift_to_the_same_quads_with_no_blank_nodes() {
 
 #[test]
 fn a_construct_that_mints_blank_nodes_is_refused() {
-    let mapping = Mapping::parse(
+    let err = Mapping::parse(
         r#"@prefix md: <https://ikigai-rs.dev/ns/md#> .
            <#m> a md:Mapping ; md:construct """
              PREFIX md: <https://ikigai-rs.dev/ns/md#>
              CONSTRUCT { [] <urn:ex:p> ?t } WHERE { ?h md:text ?t }""" ."#,
         "urn:test:m",
     )
-    .unwrap();
-    let d = doc("b.md");
-    let quads = lift("# x\n", &d, &mapping.profile);
-    let err = ikigai_markdown::apply(&quads, &d.iri, &mapping.constructs).unwrap_err();
-    assert!(err.contains("blank-node"), "{err}");
+    .unwrap_err();
+    assert!(err.contains("blank node in a CONSTRUCT template"), "{err}");
+    assert!(err.contains("stable identifier"), "{err}");
 }
 
 #[test]
@@ -853,8 +851,7 @@ fn mapping_constructs_return_a_set_union() {
 }
 
 #[test]
-#[ignore = "Mapping evaluation does not yet enforce deterministic SPARQL"]
-fn mapped_graph_is_repeatable_with_the_same_inputs() {
+fn apply_refuses_a_uuid_construct_before_it_runs() {
     let d = doc("repeat.md");
     let structural = lift("# Sample\n", &d, &Profile::default());
     let constructs = ["CONSTRUCT { ?s <urn:test:identifier> ?id } WHERE {
@@ -862,7 +859,63 @@ fn mapped_graph_is_repeatable_with_the_same_inputs() {
             BIND(UUID() AS ?id)
         }"
     .into()];
-    let first = ikigai_markdown::apply(&structural, &d.iri, &constructs);
-    let second = ikigai_markdown::apply(&structural, &d.iri, &constructs);
-    assert_eq!(first, second);
+    let err = ikigai_markdown::apply(&structural, &d.iri, &constructs).unwrap_err();
+    assert!(err.contains("construct 1 is not repeatable"), "{err}");
+    assert!(err.contains("UUID() creates a fresh IRI"), "{err}");
+    assert!(
+        err.contains("stable identifier derived from the document IRI"),
+        "{err}"
+    );
+}
+
+#[test]
+fn lint_and_application_agree_on_nonrepeatable_constructs() {
+    let d = doc("repeat.md");
+    // There are no matching triples, so evaluating to inspect the output would
+    // miss these hazards. Lint and application must reject the query itself.
+    let construct = r#"CONSTRUCT { ?s <urn:test:identifier> ?id } WHERE {
+        ?s <urn:test:missing> ?key .
+        BIND(BNODE(STR(?key)) AS ?id)
+        FILTER EXISTS { BIND(NOW() AS ?instant) }
+    } LIMIT 1"#;
+    let ttl = format!(
+        r#"@prefix md: <https://ikigai-rs.dev/ns/md#> .
+           <#m> a md:Mapping ; md:construct """{construct}""" ."#
+    );
+    let err = ikigai_markdown::apply(&[], &d.iri, &[construct.into()]).unwrap_err();
+    let report = ikigai_markdown::lint::check_mapping(&ttl, "urn:test:mapping");
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "construct-invalid" && finding.message == err));
+    for expected in ["BNODE() allocates", "NOW() depends", "LIMIT or OFFSET"] {
+        assert!(err.contains(expected), "{err}");
+    }
+}
+
+#[test]
+fn input_derived_identifiers_repeat_for_the_same_document() {
+    let d = doc("repeat.md");
+    let structural = lift("# First\n\n# Second\n", &d, &Profile::default());
+    for key in ["STR(?position)", "SHA256(STR(?label))"] {
+        let construct = format!(
+            r#"PREFIX md: <https://ikigai-rs.dev/ns/md#>
+            CONSTRUCT {{ ?id <https://example.org/vocab/label> ?label }}
+            WHERE {{
+              ?heading a md:Heading ; md:document ?doc ; md:order ?position ; md:text ?label .
+              # UUID() and BNODE() are only mentioned in a comment.
+              BIND(IRI(CONCAT("https://example.org/id/heading/",
+                              ENCODE_FOR_URI(STR(?doc)), "/", {key})) AS ?id)
+            }}"#
+        );
+        let run = || {
+            let quads =
+                ikigai_markdown::apply(&structural, &d.iri, std::slice::from_ref(&construct))
+                    .unwrap();
+            assert_eq!(quads.len(), 2);
+            assert_ne!(quads[0].subject, quads[1].subject);
+            ikigai_markdown::serialize(&quads, false).unwrap()
+        };
+        assert_eq!(run(), run());
+    }
 }

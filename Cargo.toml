@@ -43,7 +43,9 @@ regex = "1.12"
 # Stage 2: the mapping's CONSTRUCTs run over the structural graph in an in-memory
 # store; the mapping itself is Turtle. No rocksdb (default features off), so this
 # stays pure Rust — the same posture as ikigai-linkeddata.
-oxigraph = { version = "0.5.11", default-features = false }
+oxigraph = { version = "0.5.11", default-features = false, features = ["rdf-12"] }
+# The shared classifier enables the RDF 1.2 algebra, so Oxigraph must use matching term types.
+ikigai-rdf = { version = "0.6.1", default-features = false, features = ["sparql-algebra"] }
 # The bounds on caller SPARQL — a mapping's `md:construct` is caller text (ledger #963):
 # `limits::check_sparql` + the sized thread keep a nested or chained query from overflowing
 # the stack and aborting the host, `budget::check_query` keeps the planner, which cannot be

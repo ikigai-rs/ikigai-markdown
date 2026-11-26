@@ -122,11 +122,12 @@ impl Mapping {
         let empty =
             Store::new().map_err(|e| crate::sparql::refuse(format!("in-memory store: {e}")))?;
         let mut constructs = Vec::new();
-        for text in texts {
-            if crate::sparql::construct(&text, &empty, "md:construct", allowance)?.is_none() {
-                return Err(crate::sparql::refuse(
-                    "md:construct must be a CONSTRUCT query",
-                ));
+        for (index, text) in texts.into_iter().enumerate() {
+            let what = format!("mapping <{base}> md:construct {}", index + 1);
+            if crate::sparql::construct(&text, &empty, &what, allowance)?.is_none() {
+                return Err(crate::sparql::refuse(format!(
+                    "{what} must be a CONSTRUCT query"
+                )));
             }
             constructs.push(text);
         }

@@ -11,8 +11,8 @@ use crate::sparql::refuse;
 /// Run `constructs` over `structural` (queried as the DEFAULT graph, so a mapping
 /// needs no `GRAPH` clause) and return their union as quads in `graph`.
 ///
-/// Refuses a construct that emits a blank node: the module recipe skolemizes, and
-/// a blank node minted per run would make two lifts of the same bytes differ. Each
+/// Refuses nonrepeatable constructs before evaluation and rejects blank-node output.
+/// Fresh blank nodes would make two lifts of the same bytes differ. Each
 /// construct is caller text, so it runs inside the bounds `crate::sparql` applies
 /// (ledger #963), and within a time budget: with no caller to raise it, the store's base
 /// (5 s) for all of `constructs` together (ledger #1344).
