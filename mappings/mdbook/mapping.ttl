@@ -1,0 +1,304 @@
+# The mdbook dialect: the source of an mdBook (a `SUMMARY.md` and one Markdown file per
+# chapter), plus the course directives shared with the lectern mapping (README, "Course
+# directives"). A mapping file only: nothing in the lifter knows any of these words.
+#
+# Install it by name: copy this directory to
+#   <config home>/markdown/mappings/mdbook/
+# and lift each file of the book's source with  mapping=urn:markdown:mapping:mdbook,
+# passing its path from the book's root (`src/SUMMARY.md`, `src/rdf/triples.md`).
+#
+# What it lifts:
+#
+#   - A chapter for every Markdown file other than `SUMMARY.md`, keyed by its path:
+#     `urn:mdbook:chapter:path:{path}`, titled by its first level-1 heading.
+#   - From `SUMMARY.md`: every chapter it lists, by the same IRI (the link resolved
+#     against the summary's directory), with the text it is listed as, its position in
+#     the summary (1-based), whether it is numbered (in the list) or a prefix or suffix
+#     chapter, and the chapter it is nested under. A draft chapter (`[Draft]()`) has no
+#     file and no IRI, and is left out.
+#   - Questions and exercise references (`<!-- question … -->`, `<!-- exercise … -->`),
+#     on the chapter they sit in.
+#
+# Lifted together, a summary and its chapters meet on the chapter IRI: a chapter listed
+# with no file behind it has an mb:position and no mb:path.
+#
+# Every regex is written without backslashes: a backslash inside a SPARQL string inside a
+# Turtle string has to be written four times over. In the profile's pattern (Rust regex,
+# read by Turtle once), `\t` is a tab Turtle writes into the pattern.
+
+@prefix md:    <https://ikigai-rs.dev/ns/md#> .
+@prefix mb:    <https://ikigai-rs.dev/ns/mdbook#> .
+@prefix learn: <https://ikigai-rs.dev/ns/learn#> .
+@prefix sh:    <http://www.w3.org/ns/shacl#> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+
+<urn:markdown:mapping:mdbook:mapping> a md:Mapping ;
+
+    md:citation <urn:markdown:mapping:mdbook:citation:field> ;
+
+    md:shape <urn:markdown:mapping:mdbook:shape:chapter> ,
+             <urn:markdown:mapping:mdbook:shape:question> ,
+             <urn:markdown:mapping:mdbook:shape:choice> ,
+             <urn:markdown:mapping:mdbook:shape:exercise> ,
+             <urn:markdown:mapping:mdbook:shape:unit> ;
+
+    # 1. A chapter, from its own file.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX mb: <https://ikigai-rs.dev/ns/mdbook#>
+CONSTRUCT { ?chapter a mb:Chapter ; mb:path ?path ; mb:title ?title . }
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "[.]md$") && !REGEX(?path, "(^|/)SUMMARY[.]md$"))
+  BIND(IRI(CONCAT("urn:mdbook:chapter:path:", ENCODE_FOR_URI(?path))) AS ?chapter)
+  OPTIONAL {
+    ?h a md:Heading ; md:document ?doc ; md:level 1 ; md:text ?title ; md:order ?o .
+    FILTER NOT EXISTS {
+      ?earlier a md:Heading ; md:document ?doc ; md:level 1 ; md:order ?eo .
+      FILTER(?eo < ?o)
+    }
+  }
+}
+""" ;
+
+    # 2. A chapter, as SUMMARY.md lists it. A link's block is its list item (a tight
+    #    list) or a paragraph in one (a loose list); a link in a paragraph on its own is
+    #    a prefix or suffix chapter. External links and draft chapters are left out.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX mb: <https://ikigai-rs.dev/ns/mdbook#>
+CONSTRUCT {
+  ?chapter a mb:Chapter ; mb:listedAs ?label ; mb:position ?position ;
+    mb:numbered ?numbered ; mb:parent ?parent .
+}
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "(^|/)SUMMARY[.]md$"))
+  BIND(REPLACE(?path, "SUMMARY[.]md$", "") AS ?dir)
+  {
+    SELECT ?b ?href ?label (COUNT(DISTINCT ?earlier) AS ?position) WHERE {
+      ?link a md:Link ; md:href ?href ; md:text ?label ; md:block ?b .
+      ?b md:order ?o .
+      FILTER(?href != "" && !CONTAINS(?href, ":"))
+      ?other a md:Link ; md:href ?otherHref ; md:block ?earlier .
+      ?earlier md:order ?eo .
+      FILTER(?otherHref != "" && !CONTAINS(?otherHref, ":") && ?eo <= ?o)
+    } GROUP BY ?b ?href ?label
+  }
+  BIND(REPLACE(REPLACE(?href, "#.*$", ""), "^[.]/", "") AS ?target)
+  FILTER(?target != "")
+  BIND(IRI(CONCAT("urn:mdbook:chapter:path:", ENCODE_FOR_URI(CONCAT(?dir, ?target)))) AS ?chapter)
+  OPTIONAL {
+    { ?b a md:ListItem . BIND(?b AS ?item) } UNION { ?b md:parent ?item . ?item a md:ListItem . }
+  }
+  BIND(BOUND(?item) AS ?numbered)
+  OPTIONAL {
+    { ?b a md:ListItem . BIND(?b AS ?child) } UNION { ?b md:parent ?child . ?child a md:ListItem . }
+    ?child md:parent ?list .
+    ?list md:parent ?up .
+    ?up a md:ListItem .
+    ?upLink a md:Link ; md:href ?upHref .
+    { ?upLink md:block ?up . } UNION { ?upLink md:block ?upBlock . ?upBlock md:parent ?up . }
+    FILTER(?upHref != "" && !CONTAINS(?upHref, ":"))
+    BIND(REPLACE(REPLACE(?upHref, "#.*$", ""), "^[.]/", "") AS ?upTarget)
+  }
+  BIND(IF(BOUND(?upTarget) && ?upTarget != "",
+          IRI(CONCAT("urn:mdbook:chapter:path:", ENCODE_FOR_URI(CONCAT(?dir, ?upTarget)))),
+          ?none) AS ?parent)
+}
+""" ;
+
+    # 3. Questions (the shared course directive), in the chapter they sit in.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX learn: <https://ikigai-rs.dev/ns/learn#>
+CONSTRUCT {
+  ?chapter learn:question ?question .
+  ?question a learn:Question ; learn:name ?name ; learn:unit ?unit ;
+    learn:kind ?kind ; learn:prompt ?prompt ; learn:answer ?answer ; learn:check ?check .
+  ?unit a learn:Unit ; learn:name ?unitName .
+}
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "[.]md$") && !REGEX(?path, "(^|/)SUMMARY[.]md$"))
+  ?qb a md:HtmlBlock ; md:document ?doc ; md:text ?qt .
+  FILTER(REGEX(?qt, "^[ ]*<!--[ ]*question([^a-z:-]|$)"))
+  ?nm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?nv .
+  FILTER(STRSTARTS(?nv, "name:"))
+  ?um a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?uv .
+  FILTER(STRSTARTS(?uv, "unit:"))
+  BIND(REPLACE(STRAFTER(?nv, ":"), "^[ ]+|[ ]+$", "") AS ?name)
+  BIND(REPLACE(STRAFTER(?uv, ":"), "^[ ]+|[ ]+$", "") AS ?unitName)
+  FILTER(?name != "" && ?unitName != "")
+  BIND(IRI(CONCAT("urn:learn:unit:name:", ENCODE_FOR_URI(?unitName))) AS ?unit)
+  BIND(IRI(CONCAT("urn:learn:question:unit:", ENCODE_FOR_URI(?unitName), ":name:", ENCODE_FOR_URI(?name))) AS ?question)
+  BIND(IRI(CONCAT("urn:mdbook:chapter:path:", ENCODE_FOR_URI(?path))) AS ?chapter)
+  OPTIONAL {
+    ?fm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?fv .
+    BIND(STRBEFORE(?fv, ":") AS ?field)
+    BIND(REPLACE(STRAFTER(?fv, ":"), "^[ ]+|[ ]+$", "") AS ?fieldValue)
+    BIND(IF(?field = "kind", LCASE(?fieldValue), ?none) AS ?kind)
+    BIND(IF(?field = "prompt", ?fieldValue, ?none) AS ?prompt)
+    BIND(IF(?field = "answer", ?fieldValue, ?none) AS ?answer)
+    BIND(IF(?field = "check", ?fieldValue, ?none) AS ?check)
+  }
+}
+""" ;
+
+    # 4. A question's choices, numbered in the order written. `[x]` marks a correct one.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX learn: <https://ikigai-rs.dev/ns/learn#>
+CONSTRUCT {
+  ?question learn:choice ?choice .
+  ?choice a learn:Choice ; learn:index ?i ; learn:text ?text ; learn:correct ?correct .
+}
+WHERE {
+  ?qb a md:HtmlBlock ; md:text ?qt .
+  FILTER(REGEX(?qt, "^[ ]*<!--[ ]*question([^a-z:-]|$)"))
+  ?nm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?nv .
+  FILTER(STRSTARTS(?nv, "name:"))
+  ?um a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?uv .
+  FILTER(STRSTARTS(?uv, "unit:"))
+  BIND(REPLACE(STRAFTER(?nv, ":"), "^[ ]+|[ ]+$", "") AS ?name)
+  BIND(REPLACE(STRAFTER(?uv, ":"), "^[ ]+|[ ]+$", "") AS ?unitName)
+  FILTER(?name != "" && ?unitName != "")
+  {
+    SELECT ?qb ?cl ?cv (COUNT(DISTINCT ?pl) AS ?i) WHERE {
+      ?cm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?cv ; md:line ?cl .
+      FILTER(STRSTARTS(?cv, "choice:"))
+      ?pm a md:Match ; md:matchedBy "field" ; md:block ?qb ; md:value ?pv ; md:line ?pl .
+      FILTER(STRSTARTS(?pv, "choice:") && ?pl <= ?cl)
+    } GROUP BY ?qb ?cl ?cv
+  }
+  BIND(REPLACE(STRAFTER(?cv, ":"), "^[ ]+|[ ]+$", "") AS ?written)
+  # A marker is `[x]`, `[X]` or `[ ]`. Read with string functions: in a regex, `[[]`
+  # opens a nested class.
+  BIND(STRSTARTS(?written, "[") && SUBSTR(?written, 3, 1) = "]" AS ?marked)
+  BIND(?marked && UCASE(SUBSTR(?written, 2, 1)) = "X" AS ?correct)
+  BIND(IF(?marked, REPLACE(SUBSTR(?written, 4), "^[ ]+", ""), ?written) AS ?text)
+  BIND(IRI(CONCAT("urn:learn:question:unit:", ENCODE_FOR_URI(?unitName), ":name:", ENCODE_FOR_URI(?name))) AS ?question)
+  BIND(IRI(CONCAT("urn:learn:choice:unit:", ENCODE_FOR_URI(?unitName), ":question:", ENCODE_FOR_URI(?name), ":index:", STR(?i))) AS ?choice)
+}
+""" ;
+
+    # 5. Exercise references (the shared course directive), in the chapter they sit in.
+    md:construct """
+PREFIX md: <https://ikigai-rs.dev/ns/md#>
+PREFIX learn: <https://ikigai-rs.dev/ns/learn#>
+CONSTRUCT {
+  ?chapter learn:exercise ?exercise .
+  ?exercise a learn:Exercise ; learn:name ?name ; learn:unit ?unit ;
+    learn:path ?exercisePath ; learn:title ?title .
+  ?unit a learn:Unit ; learn:name ?unitName .
+}
+WHERE {
+  ?doc a md:Document ; md:path ?path .
+  FILTER(REGEX(?path, "[.]md$") && !REGEX(?path, "(^|/)SUMMARY[.]md$"))
+  ?eb a md:HtmlBlock ; md:document ?doc ; md:text ?et .
+  FILTER(REGEX(?et, "^[ ]*<!--[ ]*exercise([^a-z:-]|$)"))
+  ?nm a md:Match ; md:matchedBy "field" ; md:block ?eb ; md:value ?nv .
+  FILTER(STRSTARTS(?nv, "name:"))
+  ?um a md:Match ; md:matchedBy "field" ; md:block ?eb ; md:value ?uv .
+  FILTER(STRSTARTS(?uv, "unit:"))
+  BIND(REPLACE(STRAFTER(?nv, ":"), "^[ ]+|[ ]+$", "") AS ?name)
+  BIND(REPLACE(STRAFTER(?uv, ":"), "^[ ]+|[ ]+$", "") AS ?unitName)
+  FILTER(?name != "" && ?unitName != "")
+  BIND(IRI(CONCAT("urn:learn:unit:name:", ENCODE_FOR_URI(?unitName))) AS ?unit)
+  BIND(IRI(CONCAT("urn:learn:exercise:unit:", ENCODE_FOR_URI(?unitName), ":name:", ENCODE_FOR_URI(?name))) AS ?exercise)
+  BIND(IRI(CONCAT("urn:mdbook:chapter:path:", ENCODE_FOR_URI(?path))) AS ?chapter)
+  OPTIONAL {
+    ?fm a md:Match ; md:matchedBy "field" ; md:block ?eb ; md:value ?fv .
+    BIND(STRBEFORE(?fv, ":") AS ?field)
+    BIND(REPLACE(STRAFTER(?fv, ":"), "^[ ]+|[ ]+$", "") AS ?fieldValue)
+    BIND(IF(?field = "path", ?fieldValue, ?none) AS ?exercisePath)
+    BIND(IF(?field = "title", ?fieldValue, ?none) AS ?title)
+  }
+}
+""" .
+
+# --- the profile entry ---------------------------------------------------------------
+
+# One `key: value` line of a question or exercise directive. The constructs keep only
+# the lines that fall inside one.
+<urn:markdown:mapping:mdbook:citation:field> md:name "field" ;
+    md:pattern "(?mR)^[ \t]*(?P<v>(?:name|unit|kind|prompt|choice|answer|check|path|title):.*?)[ \t]*$" .
+
+# --- the shapes ------------------------------------------------------------------------
+
+<urn:markdown:mapping:mdbook:shape:chapter> a sh:NodeShape ;
+    sh:targetClass mb:Chapter ;
+    sh:property <urn:markdown:mapping:mdbook:shape:chapter:path> ,
+                <urn:markdown:mapping:mdbook:shape:chapter:title> ,
+                <urn:markdown:mapping:mdbook:shape:chapter:listed-as> ,
+                <urn:markdown:mapping:mdbook:shape:chapter:position> ,
+                <urn:markdown:mapping:mdbook:shape:chapter:numbered> ,
+                <urn:markdown:mapping:mdbook:shape:chapter:parent> ,
+                <urn:markdown:mapping:mdbook:shape:chapter:question> ,
+                <urn:markdown:mapping:mdbook:shape:chapter:exercise> .
+<urn:markdown:mapping:mdbook:shape:chapter:path> sh:path mb:path ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:chapter:title> sh:path mb:title ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:chapter:listed-as> sh:path mb:listedAs ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:chapter:position> sh:path mb:position ; sh:datatype xsd:integer .
+<urn:markdown:mapping:mdbook:shape:chapter:numbered> sh:path mb:numbered ; sh:datatype xsd:boolean .
+<urn:markdown:mapping:mdbook:shape:chapter:parent> sh:path mb:parent ; sh:class mb:Chapter .
+<urn:markdown:mapping:mdbook:shape:chapter:question> sh:path learn:question ; sh:class learn:Question .
+<urn:markdown:mapping:mdbook:shape:chapter:exercise> sh:path learn:exercise ; sh:class learn:Exercise .
+
+# The course directives' shapes, the same in the lectern mapping.
+<urn:markdown:mapping:mdbook:shape:question> a sh:NodeShape ;
+    sh:targetClass learn:Question ;
+    sh:property <urn:markdown:mapping:mdbook:shape:question:name> ,
+                <urn:markdown:mapping:mdbook:shape:question:unit> ,
+                <urn:markdown:mapping:mdbook:shape:question:kind> ,
+                <urn:markdown:mapping:mdbook:shape:question:prompt> ,
+                <urn:markdown:mapping:mdbook:shape:question:answer> ,
+                <urn:markdown:mapping:mdbook:shape:question:check> ,
+                <urn:markdown:mapping:mdbook:shape:question:choice> .
+<urn:markdown:mapping:mdbook:shape:question:name> sh:path learn:name ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:question:unit> sh:path learn:unit ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:class learn:Unit .
+<urn:markdown:mapping:mdbook:shape:question:kind> sh:path learn:kind ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:question:prompt> sh:path learn:prompt ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:question:answer> sh:path learn:answer ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:question:check> sh:path learn:check ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:question:choice> sh:path learn:choice ; sh:class learn:Choice .
+
+<urn:markdown:mapping:mdbook:shape:choice> a sh:NodeShape ;
+    sh:targetClass learn:Choice ;
+    sh:property <urn:markdown:mapping:mdbook:shape:choice:index> ,
+                <urn:markdown:mapping:mdbook:shape:choice:text> ,
+                <urn:markdown:mapping:mdbook:shape:choice:correct> .
+<urn:markdown:mapping:mdbook:shape:choice:index> sh:path learn:index ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer .
+<urn:markdown:mapping:mdbook:shape:choice:text> sh:path learn:text ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:choice:correct> sh:path learn:correct ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:boolean .
+
+<urn:markdown:mapping:mdbook:shape:exercise> a sh:NodeShape ;
+    sh:targetClass learn:Exercise ;
+    sh:property <urn:markdown:mapping:mdbook:shape:exercise:name> ,
+                <urn:markdown:mapping:mdbook:shape:exercise:unit> ,
+                <urn:markdown:mapping:mdbook:shape:exercise:path> ,
+                <urn:markdown:mapping:mdbook:shape:exercise:title> .
+<urn:markdown:mapping:mdbook:shape:exercise:name> sh:path learn:name ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:exercise:unit> sh:path learn:unit ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:class learn:Unit .
+<urn:markdown:mapping:mdbook:shape:exercise:path> sh:path learn:path ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+<urn:markdown:mapping:mdbook:shape:exercise:title> sh:path learn:title ;
+    sh:maxCount 1 ; sh:datatype xsd:string .
+
+<urn:markdown:mapping:mdbook:shape:unit> a sh:NodeShape ;
+    sh:targetClass learn:Unit ;
+    sh:property <urn:markdown:mapping:mdbook:shape:unit:name> .
+<urn:markdown:mapping:mdbook:shape:unit:name> sh:path learn:name ;
+    sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string .

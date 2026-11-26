@@ -296,10 +296,8 @@ fn structure(
     lines: &LineIndex,
     out: &mut Out,
 ) -> Extents {
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
 
     let mut stack: Vec<Frame> = Vec::new();
     let mut links: Vec<Link> = Vec::new();
@@ -307,7 +305,21 @@ fn structure(
     let mut link_count = 0usize;
     let mut extents = Extents::default();
 
-    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+    // Frontmatter is the YAML block that OPENS the document. pulldown-cmark reads a
+    // YAML-style block at any block start, so `---`, text, `---` later on would be a second
+    // frontmatter, where CommonMark (and every renderer) reads a thematic break and a
+    // setext heading. So it is read here, from the start only, and the body is parsed with
+    // those blocks off, over the source with the frontmatter blanked byte for byte:
+    // every offset, and so every line, stays where it was.
+    let body = match leading_frontmatter(markdown, options) {
+        Some((range, yaml)) => {
+            frontmatter(&yaml, range.start, doc, profile, lines, out);
+            std::borrow::Cow::Owned(blank(markdown, range))
+        }
+        None => std::borrow::Cow::Borrowed(markdown),
+    };
+
+    for (event, range) in Parser::new_ext(&body, options).into_offset_iter() {
         match event {
             Event::Start(tag) => {
                 let kind = match &tag {
@@ -533,6 +545,43 @@ fn structure(
         }
     }
     extents
+}
+
+/// The YAML block that opens `markdown`, if one does: its byte range and its text.
+fn leading_frontmatter(
+    markdown: &str,
+    options: Options,
+) -> Option<(std::ops::Range<usize>, String)> {
+    let mut events = Parser::new_ext(
+        markdown,
+        options | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS,
+    )
+    .into_offset_iter();
+    let range = match events.next()? {
+        (Event::Start(Tag::MetadataBlock(_)), range) if range.start == 0 => range,
+        _ => return None,
+    };
+    let mut yaml = String::new();
+    for (event, _) in events {
+        match event {
+            Event::Text(t) => yaml.push_str(&t),
+            Event::End(TagEnd::MetadataBlock(_)) => break,
+            _ => {}
+        }
+    }
+    Some((range, yaml))
+}
+
+/// `markdown` with every byte of `range` but its line endings replaced by a space: blank
+/// lines, at the same offsets. Every replaced byte becomes ASCII, so the result is UTF-8.
+fn blank(markdown: &str, range: std::ops::Range<usize>) -> String {
+    let mut bytes = markdown.as_bytes().to_vec();
+    for b in &mut bytes[range] {
+        if *b != b'\n' && *b != b'\r' {
+            *b = b' ';
+        }
+    }
+    String::from_utf8(bytes).expect("ASCII replacements keep UTF-8")
 }
 
 /// Extend the open inline run of the innermost frame.
