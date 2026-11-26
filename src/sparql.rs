@@ -290,15 +290,10 @@ pub(crate) fn construct(
     // it owns what it reads. A clone of an in-memory `Store` shares its data.
     let (owned, store, named) = (text.to_string(), store.clone(), what.to_string());
     let work = move |token: &oxigraph::sparql::CancellationToken| {
-        let bounded = |e: Error| match e {
-            Error::InvalidArgument { detail, .. } => refuse(format!("{named}: {detail}")),
-            other => other,
-        };
-        let query = spargebra::SparqlParser::new()
-            .parse_query(&owned)
-            .map_err(|e| refuse(format!("{named} is not valid SPARQL: {e}")))?;
-        budget::check_query(&query, ARG).map_err(bounded)?;
-        service::refuse_service_with(&query, ARG, Some(SERVICE_REMEDY)).map_err(bounded)?;
+        let query = parse_static(&owned, &named)?;
+        if !matches!(query, spargebra::Query::Construct { .. }) {
+            return Ok(None);
+        }
         let results = service::evaluator()
             .with_cancellation_token(token.clone())
             .for_query(query)
@@ -325,8 +320,8 @@ pub(crate) fn construct(
 }
 
 /// Parse `text` and put it through every bound and refusal [`construct`] applies BEFORE it
-/// evaluates anything: the text bound, the parse, the algebra bound, and `SERVICE`. What the
-/// linter reads a construct with, so it says what the lift would say without running it.
+/// evaluates anything: the text bound, the parse, the algebra bound, `SERVICE`, and
+/// repeatability. The linter uses this same check without running the query.
 ///
 /// ⚠ The parser is recursive: call this inside [`limits::on_sparql_stack`], never on a
 /// worker's own stack. The text bound is checked first all the same, so a caller that
@@ -342,6 +337,32 @@ pub(crate) fn parse_static(text: &str, what: &str) -> Result<spargebra::Query> {
         .map_err(|e| refuse(format!("{what} is not valid SPARQL: {e}")))?;
     budget::check_query(&query, ARG).map_err(bounded)?;
     service::refuse_service_with(&query, ARG, Some(SERVICE_REMEDY)).map_err(bounded)?;
+    if matches!(query, spargebra::Query::Construct { .. }) {
+        let reasons = ikigai_rdf::algebra::repeatability_reasons(&query)
+            .map_err(|e| refuse(format!("{what}: {e}")))?;
+        if !reasons.is_empty() {
+            use ikigai_rdf::algebra::RepeatabilityReason::*;
+            let detail = reasons
+                .into_iter()
+                .map(|reason| {
+                    let remedy = match reason {
+                        Uuid | StrUuid | BNode | ConstructTemplateBlankNode =>
+                            "Use a stable identifier derived from the document IRI and the node's path or content digest.",
+                        Now => "Supply a fixed instant as input instead.",
+                        Rand => "Use a value derived from stable input instead.",
+                        Slice => "Remove the slice or select rows by a stable key instead.",
+                        Sample => "Select a value by an unambiguous key instead.",
+                        GroupConcat => "Collect and sort the values in a separate step.",
+                        Reduced => "Use DISTINCT if you need to remove duplicates.",
+                        _ => "Rewrite the construct to use only repeatable operations.",
+                    };
+                    format!("{reason} {remedy}")
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Err(refuse(format!("{what} is not repeatable. {detail}")));
+        }
+    }
     Ok(query)
 }
 

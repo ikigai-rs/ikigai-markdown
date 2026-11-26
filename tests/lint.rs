@@ -162,7 +162,7 @@ WHERE { ?m md:document ?d ; md:matchedBy "ticket" ; md:value ?v }""" ;
     assert_eq!(
         codes,
         vec![
-            (Severity::Error, "construct-blank-node"),
+            (Severity::Error, "construct-invalid"),
             (Severity::Error, "construct-invalid"),
             (Severity::Error, "construct-invalid"),
             (Severity::Error, "profile-invalid"),
@@ -179,6 +179,7 @@ WHERE { ?m md:document ?d ; md:matchedBy "ticket" ; md:value ?v }""" ;
     for expected in [
         "construct 1 is not a CONSTRUCT query",
         "construct 4 is not valid SPARQL",
+        "A blank node in a CONSTRUCT template creates a fresh blank node",
         "md:split `tags`: delimiter is not a regex: regex parse error: ( ^ error: unclosed group",
         "md:citation `broken`: pattern is not a regex",
         "construct 3 compare(s) md:matchedBy with `ticket`, which the profile defines no \

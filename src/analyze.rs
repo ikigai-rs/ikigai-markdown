@@ -110,8 +110,6 @@ pub struct Produces {
     pub computed_predicate: bool,
     /// Some class is computed at run time and cannot be read here.
     pub computed_class: bool,
-    /// The template mints a blank node, which the lift refuses.
-    pub blank_node: bool,
 }
 
 /// One construct, read.
@@ -598,11 +596,6 @@ fn produces(
     let mut out = Produces::default();
     let resolve = |v: &str| iri_constants.get(v).filter(|c| !c.is_empty());
     for t in template {
-        if matches!(t.subject, TermPattern::BlankNode(_))
-            || matches!(t.object, TermPattern::BlankNode(_))
-        {
-            out.blank_node = true;
-        }
         let predicate = match &t.predicate {
             NamedNodePattern::NamedNode(n) => Some(n.as_str().to_string()),
             NamedNodePattern::Variable(v) => {
